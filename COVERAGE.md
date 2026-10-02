@@ -1,6 +1,6 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.6
+**Reference version:** 0.7
 
 **Protocol target:** MPX/4 Draft 03
 
@@ -87,9 +87,25 @@ Draft 03 defines JOIN rejection error classes but no dedicated pre-authenticatio
 | Stream + Session flow-control accounting | Implemented |
 | Final-size validation | Implemented |
 | Full two-Stream FIN / CONSUMED lifecycle | Implemented |
-| RESET / STOP_SENDING state engine | Partial codec only |
-| Tombstone compaction | Not yet implemented |
-| Complete retired-identity state machine | Not yet implemented |
+| RESET_STREAM typed decode | Implemented |
+| STOP_SENDING typed decode | Implemented |
+| STREAM_OPEN_REJECT typed decode | Implemented |
+| Active FIN -> RESET same-final transition | Implemented |
+| RESET suppresses later application delivery | Implemented |
+| STOP_SENDING supersedes pending local FIN | Implemented |
+| Pre-open RESET Final Offset 0 | Implemented |
+| Pre-open RESET non-zero rejection | Implemented |
+| Pre-open STOP + generated RESET | Implemented |
+| Late OPEN after pre-open cancellation | Implemented |
+| Lightweight cancellation tombstone | Implemented |
+| Accepted-Stream terminal tombstone | Implemented |
+| Tombstone duplicate terminal idempotence | Implemented |
+| Tombstone final-size conflict detection | Implemented |
+| Tombstone compaction to retired identity | Implemented |
+| Retired identity never recreates application state | Implemented |
+| Retired stale DATA adds no Session commitment | Implemented |
+| Advanced tombstone range/bitmap compaction | Not yet implemented |
+| Complete initiator OPENING acceptance-evidence state machine | Not yet implemented |
 
 The two-Stream reference endpoint currently uses one Carrier. Multipath scheduling across many simultaneous Streams is a later integration step.
 
@@ -147,6 +163,9 @@ Reference scheduler algorithms are local implementation choices. Draft 03 standa
 | Carrier loss + Generation replacement | Implemented |
 | Scheduler-driven replacement recovery | Implemented |
 | Two-Carrier measured RTT + AUTO selection | Implemented |
+| Real pre-open RESET -> tombstone -> retired identity | Implemented |
+| Real pre-open STOP -> RESET -> tombstone -> retired identity | Implemented |
+| Retired stale DATA + Carrier liveness PING/PONG | Implemented |
 | End-to-end WEIGHTED traffic-placement CLI | Not yet implemented |
 
 ## Specification vectors
@@ -162,7 +181,7 @@ Reference scheduler algorithms are local implementation choices. Draft 03 standa
 
 ## Interoperability profile
 
-Version 0.6 now exercises three independent Session behaviors that can be combined by a production implementation:
+Version 0.7 adds terminal-state and retirement behavior to the existing path, Stream, and reliability exercises:
 
 ```text
 Path measurement:
@@ -181,8 +200,16 @@ Reliability:
     Attempt 1 -> Carrier A
     retry/loss
     Attempt 2 -> Carrier B
+
+Terminal / retirement:
+  RESET or STOP before OPEN
+      -> cancellation tombstone
+      -> reject late OPEN
+      -> duplicate terminal is idempotent
+      -> compact to retired identity
+      -> stale DATA ignored without credit commitment
 ```
 
 The reference still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
 
-The next major milestones are the remaining state-machine-heavy areas: RESET/STOP_SENDING, tombstones/retired identities, and then a combined multi-Stream + multi-Carrier adaptive scheduling exercise.
+The next major milestones are the remaining state-machine-heavy areas: initiator OPENING acceptance evidence, full bidirectional RESET/STOP integration across the existing Stream endpoints, CARRIER_CLOSE / SESSION_CLOSE, and then a combined multi-Stream + multi-Carrier adaptive scheduling exercise.

@@ -68,6 +68,28 @@ class StreamTerminal:
     final_offset: int
 
 
+@dataclass(frozen=True)
+class StreamOpenReject:
+    stream_id: int
+    transmission_id: int
+    error_code: int
+
+
+@dataclass(frozen=True)
+class ResetStream:
+    stream_id: int
+    transmission_id: int
+    final_offset: int
+    error_code: int
+
+
+@dataclass(frozen=True)
+class StopSending:
+    stream_id: int
+    transmission_id: int
+    error_code: int
+
+
 def encode_parameter(parameter: Parameter) -> bytes:
     if parameter.flags & 0xFE:
         raise ValueError("reserved Parameter flag bits must be zero")
@@ -252,6 +274,14 @@ def encode_stream_open_reject(stream_id: int, transmission_id: int, error_code: 
     )
 
 
+def decode_stream_open_reject(frame: Frame) -> StreamOpenReject:
+    _expect_frame(frame, FrameType.STREAM_OPEN_REJECT)
+    stream_id, transmission_id, error_code = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STREAM_OPEN_REJECT fields")
+    return StreamOpenReject(stream_id, transmission_id, error_code)
+
+
 def encode_stream_data(stream_id: int, offset: int, transmission_id: int, data: bytes) -> bytes:
     if stream_id <= 0 or transmission_id <= 0 or not data:
         raise ValueError("invalid STREAM_DATA fields")
@@ -381,6 +411,17 @@ def encode_reset_stream(stream_id: int, transmission_id: int, final_offset: int,
     )
 
 
+def decode_reset_stream(frame: Frame) -> ResetStream:
+    _expect_frame(frame, FrameType.RESET_STREAM)
+    stream_id, transmission_id, final_offset, error_code = _decode_exact_varints(
+        frame.body,
+        4,
+    )
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid RESET_STREAM fields")
+    return ResetStream(stream_id, transmission_id, final_offset, error_code)
+
+
 def encode_stop_sending(stream_id: int, transmission_id: int, error_code: int) -> bytes:
     if stream_id <= 0 or transmission_id <= 0:
         raise ValueError("invalid STOP_SENDING fields")
@@ -390,6 +431,14 @@ def encode_stop_sending(stream_id: int, transmission_id: int, error_code: int) -
         + encode_varint(transmission_id)
         + encode_varint(error_code),
     )
+
+
+def decode_stop_sending(frame: Frame) -> StopSending:
+    _expect_frame(frame, FrameType.STOP_SENDING)
+    stream_id, transmission_id, error_code = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STOP_SENDING fields")
+    return StopSending(stream_id, transmission_id, error_code)
 
 
 def encode_credit_probe(stream_id: int) -> bytes:

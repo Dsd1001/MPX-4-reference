@@ -10,6 +10,7 @@ from .multistream_endpoint import run_multistream_client, run_multistream_server
 from .probe_endpoint import run_probe_client, run_probe_server
 from .replacement_endpoint import run_replacement_client, run_replacement_server
 from .stream_endpoint import run_stream_client, run_stream_server
+from .terminal_endpoint import run_terminal_client, run_terminal_server
 from .vectorcheck import verify_all
 
 
@@ -36,7 +37,21 @@ def split_address(value: str) -> tuple[str, int]:
 
 
 def result_json(result) -> str:
-    if hasattr(result, "carrier1_rtt_ms"):
+    if hasattr(result, "stale_data_ignored"):
+        payload = {
+            "session_id": result.session_id.hex(),
+            "mode": result.mode,
+            "stream_id": result.stream_id,
+            "cancellation_acked": result.cancellation_acked,
+            "reset_sent": result.reset_sent,
+            "open_rejected": result.open_rejected,
+            "application_created": result.application_created,
+            "tombstone_recorded": result.tombstone_recorded,
+            "retired_identity": result.retired_identity,
+            "stale_data_ignored": result.stale_data_ignored,
+            "session_committed_bytes": result.session_committed_bytes,
+        }
+    elif hasattr(result, "carrier1_rtt_ms"):
         payload = {
             "session_id": result.session_id.hex(),
             "scheduler": result.scheduler,
@@ -216,6 +231,22 @@ def main() -> None:
     multistream_client.add_argument("--send1", required=True)
     multistream_client.add_argument("--send2", required=True)
 
+    terminal_server = sub.add_parser(
+        "terminal-server",
+        help="run Draft 03 pre-open cancellation / retirement scenarios",
+    )
+    terminal_server.add_argument("--listen", default="127.0.0.1:24004")
+    terminal_server.add_argument("--key", required=True, type=parse_key)
+    terminal_server.add_argument("--mode", choices=["reset", "stop"], required=True)
+
+    terminal_client = sub.add_parser(
+        "terminal-client",
+        help="send RESET_STREAM or STOP_SENDING before STREAM_OPEN",
+    )
+    terminal_client.add_argument("--connect", default="127.0.0.1:24004")
+    terminal_client.add_argument("--key", required=True, type=parse_key)
+    terminal_client.add_argument("--mode", choices=["reset", "stop"], required=True)
+
     args = parser.parse_args()
 
     if args.command == "vectors":
@@ -380,6 +411,38 @@ def main() -> None:
                     args.key,
                     payload1=args.send1.encode(),
                     payload2=args.send2.encode(),
+                )
+            )
+        )
+        return
+
+    if args.command == "terminal-server":
+        host, port = split_address(args.listen)
+        print(
+            json.dumps({"listening": args.listen, "mode": f"terminal-{args.mode}"}),
+            flush=True,
+        )
+        print(
+            result_json(
+                run_terminal_server(
+                    host,
+                    port,
+                    args.key,
+                    mode=args.mode,
+                )
+            )
+        )
+        return
+
+    if args.command == "terminal-client":
+        host, port = split_address(args.connect)
+        print(
+            result_json(
+                run_terminal_client(
+                    host,
+                    port,
+                    args.key,
+                    mode=args.mode,
                 )
             )
         )

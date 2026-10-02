@@ -4,7 +4,7 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
-**Reference version:** 0.6.0
+**Reference version:** 0.7.0
 
 **Language:** Python 3.11+
 
@@ -14,7 +14,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Version 0.6 implements:
+Version 0.7 implements:
 
 - canonical MPX VarInt;
 - Handshake Message and Parameter codec;
@@ -29,7 +29,13 @@ Version 0.6 implements:
 - single-Stream bidirectional DATA/ACK/FIN/CONSUMED;
 - two simultaneously active Client Streams with IDs 1 and 3;
 - Session-wide Transmission IDs across multiple Streams;
-- out-of-order reassembly, overlap validation, final-size checks, and retired Stream-ID tracking;
+- out-of-order reassembly, overlap validation, and final-size checks;
+- typed RESET_STREAM, STOP_SENDING, and STREAM_OPEN_REJECT decoding;
+- a Server-side terminal Stream state machine covering FIN/RESET/STOP semantics;
+- valid pre-open RESET_STREAM and STOP_SENDING cancellation;
+- lightweight cancellation tombstones and retained terminal tombstones;
+- compacted retired Stream identities that never recreate application state;
+- idempotent duplicate terminal handling and final-size conflict detection;
 - cross-Carrier reinjection and duplicate-delivery suppression;
 - timer-driven retry and immediate reinjection after Carrier loss;
 - AGGREGATE, PROTECT, AUTO, and WEIGHTED reference scheduler classes;
@@ -41,8 +47,9 @@ Version 0.6 implements:
 
 Still intentionally incomplete:
 
-- RESET_STREAM / STOP_SENDING terminal state engine;
-- tombstone compaction and the complete retired-identity rules from STATE-MACHINES.md;
+- a complete initiator-side OPENING acceptance-evidence state machine;
+- full bidirectional terminal-state integration for every existing endpoint;
+- advanced tombstone compaction policies and compact range/bitmap representations;
 - CARRIER_CLOSE / SESSION_CLOSE endpoint behavior;
 - continuously running background path probes;
 - production-grade congestion-control interaction;
@@ -71,6 +78,8 @@ src/mpx4/
 ├── probe_endpoint.py      Two-Carrier measured-path scheduler demo
 ├── multipath_endpoint.py  Cross-Carrier reinjection reference exchange
 ├── replacement_endpoint.py Carrier-loss and Generation replacement exchange
+├── terminal.py            RESET/STOP, tombstone, and retired-identity state machine
+├── terminal_endpoint.py   Real pre-open cancellation / retirement exchange
 ├── vectorcheck.py         Specification-vector verifier
 └── __main__.py            Command-line interface
 
@@ -84,6 +93,8 @@ tests/
 ├── test_scheduler.py
 ├── test_scheduler_handshake.py
 ├── test_stream.py
+├── test_terminal.py
+├── test_terminal_endpoint.py
 └── test_vectors.py
 ```
 
@@ -123,7 +134,7 @@ Expected result:
 MPX4_SPEC_DIR=../MPX-4 python -m unittest discover -s tests -v
 ```
 
-The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, and two simultaneously active Streams.
+The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, two simultaneously active Streams, and pre-open RESET/STOP cancellation followed by tombstone retirement.
 
 ## Minimal PING/PONG endpoint
 
@@ -308,6 +319,63 @@ outstanding Transmission reinjected
 
 The existing `replacement-server` and `replacement-client` commands exercise this path with the scheduler/reliability loop.
 
+## Terminal state, tombstones, and retired identities
+
+Version 0.7 adds executable Draft 03 terminal-state behavior. In particular, the Server accepts valid cancellation Frames that can overtake STREAM_OPEN on another Carrier.
+
+Pre-open RESET example:
+
+```text
+RESET_STREAM Stream 1 / Final Offset 0
+        |
+        v
+Server records cancellation tombstone
+        |
+        +-- TRANSMISSION_ACK
+        |
+late STREAM_OPEN Stream 1
+        |
+        +-- STREAM_OPEN_REJECT / STREAM_STATE_ERROR
+        |
+matching duplicate RESET
+        |
+        +-- ACK again
+        |
+compact tombstone -> retired identity
+        |
+stale STREAM_DATA
+        |
+        +-- ignored; no application state, no Session commitment
+```
+
+Pre-open STOP behaves similarly, except the Server also emits a reliable RESET_STREAM with Final Offset 0 for its not-yet-started sending direction. Once that RESET is acknowledged, duplicate STOP_SENDING is idempotent and does not allocate another RESET Transmission.
+
+The active-Stream terminal state machine also verifies:
+
+- FIN followed by RESET with the same Final Offset is valid and reset semantics become authoritative;
+- FIN after RESET with the same Final Offset is acknowledged without restoring graceful EOF semantics;
+- a different Final Offset is FINAL_SIZE_ERROR;
+- terminal retransmission cannot silently change its Transmission ID;
+- DATA arriving after RESET and within Final Offset is never delivered again;
+- DATA beyond Final Offset is FINAL_SIZE_ERROR;
+- STOP_SENDING can supersede a pending local FIN with RESET_STREAM while a stale FIN ACK cannot cancel the RESET.
+
+Run the real TCP scenario with RESET:
+
+```bash
+python -m mpx4 terminal-server \
+  --listen 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode reset
+
+python -m mpx4 terminal-client \
+  --connect 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode reset
+```
+
+Use `--mode stop` to exercise STOP_SENDING before STREAM_OPEN.
+
 ## JOIN rejection behavior
 
 Draft 03 defines JOIN validation failures such as `SESSION_CONFLICT`, `SCHEDULER_MISMATCH`, and `CARRIER_CONFLICT`, but does not define a dedicated pre-authentication handshake-error response message.
@@ -320,7 +388,7 @@ GitHub Actions checks out the current `Dsd1001/MPX-4` specification and runs:
 
 1. unit tests;
 2. real localhost TCP endpoint tests;
-3. Stream, multi-Stream, JOIN, reinjection, replacement, and path-measurement tests;
+3. Stream, multi-Stream, terminal-state, JOIN, reinjection, replacement, and path-measurement tests;
 4. all implemented specification vectors.
 
 A scheduled run also checks whether newer specification changes have broken the reference implementation.

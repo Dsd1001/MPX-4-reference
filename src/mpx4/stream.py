@@ -150,6 +150,9 @@ class ReceiveStream:
                 raise StreamStateError("conflicting overlapping Stream bytes")
             self._accepted[index] = value
 
+        if self.terminal_kind == "reset":
+            return b""
+
         out = bytearray()
         while self.delivered_offset in self._accepted:
             out.append(self._accepted[self.delivered_offset])
@@ -288,9 +291,17 @@ class ServerStreamRegistry:
         if not 1 <= self.max_active <= 2048:
             raise ValueError("invalid MAX_STREAMS")
 
-    def accept_open(self, stream_id: int) -> None:
+    @staticmethod
+    def validate_client_stream_id(stream_id: int) -> None:
         if stream_id <= 0 or stream_id % 2 == 0:
             raise StreamStateError("invalid Client Stream ID")
+
+    def remember_used(self, stream_id: int) -> None:
+        self.validate_client_stream_id(stream_id)
+        self.used.add(stream_id)
+
+    def accept_open(self, stream_id: int) -> None:
+        self.validate_client_stream_id(stream_id)
         if stream_id in self.used:
             raise StreamStateError("Stream ID reuse is forbidden")
         if len(self.active) >= self.max_active:
