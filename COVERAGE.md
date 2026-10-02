@@ -1,6 +1,6 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.2
+**Reference version:** 0.3
 
 **Protocol target:** MPX/4 Draft 03
 
@@ -21,7 +21,7 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | Consecutive record vectors | Implemented |
 | Unknown extension handling | Partial |
 
-## TCP binding
+## TCP binding and Carrier lifecycle
 
 | Area | Status |
 |---|---|
@@ -31,11 +31,19 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | Partial record detection | Implemented |
 | Real localhost TCP tests | Implemented |
 | CREATE handshake | Implemented |
-| Encrypted PING/PONG | Implemented |
-| Single-Carrier bidirectional Stream | Implemented |
-| JOIN | Not yet implemented |
-| Carrier replacement | Not yet implemented |
+| JOIN handshake | Implemented |
+| Two simultaneous authenticated Carriers | Implemented |
+| Fresh traffic keys per Carrier | Implemented |
+| Independent Record sequence spaces | Implemented |
+| New Carrier ID starts at Generation 0 | Implemented |
+| Higher Generation supersedes lower Generation | State validation implemented |
+| Equal/stale Generation rejection | Implemented |
+| Session-scoped JOIN receive-limit validation | Implemented |
+| Carrier-scoped MAX_RECORD_SIZE variation | Implemented |
+| Full replacement TCP lifecycle | Not yet implemented |
 | CARRIER_CLOSE / SESSION_CLOSE endpoint behavior | Not yet implemented |
+
+Draft 03 defines JOIN rejection error classes but no dedicated handshake-error wire message. The reference therefore rejects invalid JOINs by terminating the incomplete Carrier handshake and does not invent an extension message.
 
 ## Streams and Session behavior
 
@@ -55,8 +63,11 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | Stream + Session flow-control accounting | Implemented |
 | Final-size validation | Implemented |
 | Session-wide local Transmission ledger | Implemented |
-| Retransmission | Not yet implemented |
-| Cross-Carrier reinjection | Not yet implemented |
+| Same Transmission ID across Carrier Attempts | Implemented |
+| Cross-Carrier reinjection | Implemented for one deterministic DATA Transmission |
+| Duplicate application suppression | Implemented |
+| Reinjection consumes no additional logical credit | Implemented |
+| Automatic retransmission timer | Not yet implemented |
 | RESET / STOP_SENDING state engine | Partial codec only |
 | Tombstones / retired identities | Not yet implemented |
 | Multiple simultaneous Streams | Not yet implemented |
@@ -65,11 +76,12 @@ This file distinguishes implemented reference behavior from protocol areas that 
 
 | Area | Status |
 |---|---|
-| Carrier identity constants | Implemented |
+| Carrier identity and Generation | Implemented |
 | AGGREGATE handshake identifier | Implemented |
-| Multiple active Carriers | Not yet implemented |
+| Two active Carriers | Implemented |
+| Cross-Carrier arrival-order test | Implemented |
 | AUTO scheduler | Not yet implemented |
-| AGGREGATE scheduler engine | Not yet implemented |
+| AGGREGATE scheduler policy engine | Not yet implemented |
 | PROTECT scheduler | Not yet implemented |
 | WEIGHTED scheduler | Not yet implemented |
 | PATH_CAPACITY behavior | Not yet implemented |
@@ -83,23 +95,37 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | key-schedule.json | Verified |
 | secure-record.json | Verified |
 | tcp-binding.json | Verified |
-| state-validity.json | Partially represented by executable Stream-state tests |
+| state-validity.json | Partially represented by executable Stream/Carrier tests |
 
 ## Interoperability profile
 
-Version 0.2 exercises the Draft 03 single-Carrier foundation through a real TCP exchange:
+Version 0.3 exercises an actual two-Carrier MPX/4 Session:
 
 ```text
-CREATE
-  -> SESSION_CREDIT
-  -> STREAM_OPEN / STREAM_OPEN_OK
-  -> bidirectional STREAM_CREDIT
-  -> bidirectional STREAM_DATA
-  -> TRANSMISSION_ACK
-  -> STREAM_FIN
-  -> STREAM_CONSUMED
+Carrier 1
+  CREATE
+    |
+    +---- Session state ----+
+                           |
+Carrier 2                  |
+  JOIN --------------------+
+    |
+    +-- fresh key / IV
+    +-- Record sequence = 0
+
+Stream 1:
+  STREAM_OPEN / credit on Carrier 1
+
+Transmission N:
+  Attempt 1 -> Carrier 1
+  Attempt 2 -> Carrier 2   (same Transmission ID and bytes)
+
+Server intentionally reads Carrier 2 first
+  -> application delivery exactly once
+  -> Session commitment counted exactly once
+  -> ACK may return on either Carrier
 ```
 
 It still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
 
-The next major milestone is Carrier JOIN plus two simultaneously authenticated Carriers. That enables the reference to test retransmission/reinjection and cross-Carrier ordering without changing the codec, crypto, or single-Stream flow-control foundation.
+The next major milestone is an actual Carrier replacement after transport loss using a higher Generation, followed by automatic retransmission/reinjection of an outstanding Transmission.

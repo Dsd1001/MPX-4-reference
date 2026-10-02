@@ -48,6 +48,17 @@ class ExchangeResult:
     ping_token: int
 
 
+@dataclass(frozen=True)
+class ClientInitParameters:
+    session_id: bytes
+    action: int
+    carrier_id: int
+    generation: int
+    client_nonce: bytes
+    limits: EndpointLimits
+    scheduler: int
+
+
 def _preface() -> bytes:
     return MAGIC + encode_varint(VERSION)
 
@@ -60,6 +71,7 @@ def build_client_init(
     carrier_id: int = 1,
     generation: int = 0,
     scheduler: int = int(SchedulerID.AGGREGATE),
+    action: int = int(SessionAction.CREATE),
 ) -> bytes:
     if len(session_id) != 16 or session_id == b"\x00" * 16:
         raise ValueError("SESSION_ID must be 16 non-zero random octets")
@@ -67,7 +79,7 @@ def build_client_init(
         raise ValueError("CLIENT_NONCE must be 32 octets")
     parameters = [
         parameter_bytes(ParameterType.SESSION_ID, session_id),
-        parameter_varint(ParameterType.SESSION_ACTION, SessionAction.CREATE),
+        parameter_varint(ParameterType.SESSION_ACTION, action),
         parameter_varint(ParameterType.CARRIER_ID, carrier_id),
         parameter_varint(ParameterType.CARRIER_GENERATION, generation),
         parameter_bytes(ParameterType.CLIENT_NONCE, client_nonce),
@@ -103,7 +115,7 @@ def build_server_init(
     )
 
 
-def _validate_client_init(raw_message_body: bytes) -> tuple[bytes, int, int]:
+def parse_client_init(raw_message_body: bytes) -> ClientInitParameters:
     params = parameter_map(decode_parameters(raw_message_body))
     required = {
         int(ParameterType.SESSION_ID),
@@ -117,37 +129,59 @@ def _validate_client_init(raw_message_body: bytes) -> tuple[bytes, int, int]:
         int(ParameterType.SCHEDULER),
     }
     if set(params) != required:
-        raise DecodeError("reference endpoint requires the Draft 03 CREATE parameter set")
+        raise DecodeError("reference endpoint requires the Draft 03 Core parameter set")
 
     session_id = params[int(ParameterType.SESSION_ID)].value
     if len(session_id) != 16 or session_id == b"\x00" * 16:
         raise DecodeError("invalid SESSION_ID")
-    if parameter_varint_value(params[int(ParameterType.SESSION_ACTION)]) != int(SessionAction.CREATE):
-        raise DecodeError("reference endpoint currently supports CREATE only")
+
+    action = parameter_varint_value(params[int(ParameterType.SESSION_ACTION)])
+    if action not in (int(SessionAction.CREATE), int(SessionAction.JOIN)):
+        raise DecodeError("invalid SESSION_ACTION")
+
     carrier_id = parameter_varint_value(params[int(ParameterType.CARRIER_ID)])
     if not 1 <= carrier_id <= 8:
         raise DecodeError("invalid CARRIER_ID")
     generation = parameter_varint_value(params[int(ParameterType.CARRIER_GENERATION)])
-    if generation != 0:
-        raise DecodeError("reference CREATE endpoint expects Generation 0")
-    if len(params[int(ParameterType.CLIENT_NONCE)].value) != 32:
+    if action == int(SessionAction.CREATE) and generation != 0:
+        raise DecodeError("CREATE Carrier must use Generation 0")
+
+    client_nonce = params[int(ParameterType.CLIENT_NONCE)].value
+    if len(client_nonce) != 32:
         raise DecodeError("invalid CLIENT_NONCE")
 
-    max_frame = parameter_varint_value(params[int(ParameterType.MAX_FRAME_PAYLOAD)])
-    max_record = parameter_varint_value(params[int(ParameterType.MAX_RECORD_SIZE)])
-    max_streams = parameter_varint_value(params[int(ParameterType.MAX_STREAMS)])
-    if not 1 <= max_frame <= 32768:
+    limits = EndpointLimits(
+        max_frame_payload=parameter_varint_value(params[int(ParameterType.MAX_FRAME_PAYLOAD)]),
+        max_record_size=parameter_varint_value(params[int(ParameterType.MAX_RECORD_SIZE)]),
+        max_streams=parameter_varint_value(params[int(ParameterType.MAX_STREAMS)]),
+    )
+    if not 1 <= limits.max_frame_payload <= 32768:
         raise DecodeError("invalid MAX_FRAME_PAYLOAD")
-    if not 1024 <= max_record <= 65536:
+    if not 1024 <= limits.max_record_size <= 65536:
         raise DecodeError("invalid MAX_RECORD_SIZE")
-    if not 1 <= max_streams <= 2048:
+    if not 1 <= limits.max_streams <= 2048:
         raise DecodeError("invalid MAX_STREAMS")
 
     scheduler = parameter_varint_value(params[int(ParameterType.SCHEDULER)])
     if scheduler != int(SchedulerID.AGGREGATE):
         raise DecodeError("reference endpoint currently supports AGGREGATE only")
 
-    return session_id, carrier_id, scheduler
+    return ClientInitParameters(
+        session_id=session_id,
+        action=action,
+        carrier_id=carrier_id,
+        generation=generation,
+        client_nonce=client_nonce,
+        limits=limits,
+        scheduler=scheduler,
+    )
+
+
+def _validate_client_init(raw_message_body: bytes) -> tuple[bytes, int, int]:
+    parsed = parse_client_init(raw_message_body)
+    if parsed.action != int(SessionAction.CREATE):
+        raise DecodeError("reference endpoint requires CREATE")
+    return parsed.session_id, parsed.carrier_id, parsed.scheduler
 
 
 def _validate_server_init(raw_message_body: bytes, expected_scheduler: int) -> EndpointLimits:

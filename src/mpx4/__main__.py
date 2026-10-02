@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .endpoint import run_client, run_server
+from .multipath_endpoint import run_multipath_client, run_multipath_server
 from .stream_endpoint import run_stream_client, run_stream_server
 from .vectorcheck import verify_all
 
@@ -38,6 +39,18 @@ def result_json(result) -> str:
             "carrier_id": result.carrier_id,
             "scheduler": result.scheduler,
             "ping_token": result.ping_token,
+        }
+    elif hasattr(result, "application_deliveries"):
+        payload = {
+            "session_id": result.session_id.hex(),
+            "stream_id": result.stream_id,
+            "transmission_id": result.transmission_id,
+            "payload_utf8": result.payload.decode("utf-8", "replace"),
+            "application_deliveries": result.application_deliveries,
+            "session_committed_bytes": result.session_committed_bytes,
+            "carrier_generations": list(result.carrier_generations),
+            "fresh_carrier_keys": result.fresh_carrier_keys,
+            "carrier2_first_record_sequence": result.carrier2_first_record_sequence,
         }
     else:
         payload = {
@@ -83,6 +96,22 @@ def main() -> None:
     stream_client.add_argument("--send", required=True)
     stream_client.add_argument("--expect-reply", required=True)
 
+    multipath_server = sub.add_parser(
+        "multipath-server",
+        help="run the Draft 03 two-Carrier JOIN/reinjection server",
+    )
+    multipath_server.add_argument("--listen", default="127.0.0.1:24004")
+    multipath_server.add_argument("--key", required=True, type=parse_key)
+    multipath_server.add_argument("--expect", required=True)
+
+    multipath_client = sub.add_parser(
+        "multipath-client",
+        help="run the Draft 03 two-Carrier JOIN/reinjection client",
+    )
+    multipath_client.add_argument("--connect", default="127.0.0.1:24004")
+    multipath_client.add_argument("--key", required=True, type=parse_key)
+    multipath_client.add_argument("--send", required=True)
+
     args = parser.parse_args()
 
     if args.command == "vectors":
@@ -127,6 +156,35 @@ def main() -> None:
                     args.key,
                     payload=args.send.encode(),
                     reply_expected=args.expect_reply.encode(),
+                )
+            )
+        )
+        return
+
+    if args.command == "multipath-server":
+        host, port = split_address(args.listen)
+        print(json.dumps({"listening": args.listen, "mode": "multipath"}), flush=True)
+        print(
+            result_json(
+                run_multipath_server(
+                    host,
+                    port,
+                    args.key,
+                    expected_payload=args.expect.encode(),
+                )
+            )
+        )
+        return
+
+    if args.command == "multipath-client":
+        host, port = split_address(args.connect)
+        print(
+            result_json(
+                run_multipath_client(
+                    host,
+                    port,
+                    args.key,
+                    payload=args.send.encode(),
                 )
             )
         )

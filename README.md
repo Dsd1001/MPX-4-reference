@@ -4,6 +4,8 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
+**Reference version:** 0.3.0
+
 **Language:** Python 3.11+
 
 **Purpose:** readable wire-format reference, cryptographic vector verification, and cross-implementation testing.
@@ -12,36 +14,33 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Implemented in version 0.2:
+Version 0.3 implements:
 
-- canonical 1/2/4/8-octet MPX VarInt;
-- Handshake Message framing;
-- canonical ordered handshake Parameters;
-- typed Frame framing;
-- STREAM_DATA / TRANSMISSION_ACK / STREAM_CREDIT / SESSION_CREDIT / CREDIT_PROBE encoders;
-- PING / PONG Frames;
-- Draft 03 HKDF-SHA256 key schedule;
-- CLIENT_FINISHED and SERVER_FINISHED derivation;
+- canonical MPX VarInt;
+- Handshake Message and Parameter codec;
+- Core Frame codec;
+- Draft 03 HKDF-SHA256 key schedule and Finished verification;
 - AES-256-GCM Secure Records;
-- per-direction Record Sequence Numbers;
 - incremental TCP byte-stream parsing;
-- TCP fragmentation and coalescing behavior;
-- minimal Session CREATE handshake;
-- encrypted PING/PONG exchange over a real TCP socket;
-- one real bidirectional Stream over TCP;
-- explicit Stream and Session credit in both directions;
-- STREAM_OPEN / OPEN_OK / DATA / ACK / FIN / STREAM_CONSUMED;
-- out-of-order reassembly, overlap checks, flow-control and final-size validation;
+- Session CREATE;
+- one real bidirectional Stream with explicit Stream and Session flow control;
+- Carrier JOIN into an existing authenticated Session;
+- two simultaneously active TCP Carriers;
+- independent traffic keys, IVs, and Record sequence spaces per Carrier;
+- Carrier ID / Generation validation;
+- one deterministic cross-Carrier reinjection path;
+- duplicate application-delivery suppression;
+- Session-credit accounting that counts reinjection only once;
 - direct verification against the specification repository test vectors.
 
 Not yet implemented:
 
-- Carrier JOIN and replacement endpoint behavior;
+- automatic retransmission timers and scheduler-driven reinjection;
+- full TCP Carrier replacement after transport loss;
 - multiple simultaneous Streams;
 - RESET / STOP_SENDING terminal state engine;
-- retransmission/reinjection engine;
-- tombstone/retired-identity engine;
-- multi-Carrier scheduler implementations;
+- tombstone / retired-identity engine;
+- AUTO / AGGREGATE / PROTECT / WEIGHTED scheduler policy engines;
 - full Draft 03 interoperability profile.
 
 See [COVERAGE.md](COVERAGE.md) for the detailed conformance map.
@@ -50,21 +49,24 @@ See [COVERAGE.md](COVERAGE.md) for the detailed conformance map.
 
 ```text
 src/mpx4/
-├── constants.py     Protocol registries used by the reference code
-├── varint.py        Canonical MPX VarInt
-├── codec.py         Parameters, Handshake Messages, and Frames
-├── crypto.py        Draft 03 key schedule and Secure Records
-├── tcp.py           Incremental TCP binding parser
-├── endpoint.py      Minimal CREATE + PING/PONG reference endpoint
-├── stream.py        Stream reassembly, credit, final-size and Tx state
-├── stream_endpoint.py  Single-Carrier bidirectional Stream exchange
-├── vectorcheck.py   Specification-vector verifier
-└── __main__.py      Command-line interface
+├── constants.py          Protocol registries used by the reference code
+├── varint.py             Canonical MPX VarInt
+├── codec.py              Parameters, Handshake Messages, and Frames
+├── crypto.py             Draft 03 key schedule and Secure Records
+├── tcp.py                Incremental TCP binding parser
+├── endpoint.py           CREATE + PING/PONG endpoint
+├── stream.py             Reassembly, credit, final-size and Tx state
+├── stream_endpoint.py    Single-Carrier Stream exchange
+├── carrier.py            CREATE/JOIN Carrier lifecycle and Session state
+├── multipath_endpoint.py Two-Carrier reinjection reference exchange
+├── vectorcheck.py        Specification-vector verifier
+└── __main__.py           Command-line interface
 
 tests/
 ├── test_core.py
 ├── test_endpoint.py
 ├── test_stream.py
+├── test_multipath.py
 └── test_vectors.py
 ```
 
@@ -76,9 +78,9 @@ python3 -m venv .venv
 python -m pip install .
 ```
 
-The only runtime dependency is `cryptography`, used for AES-256-GCM. HKDF-SHA256, HMAC-SHA256, transcript construction, protocol framing, and validation logic are implemented directly in the reference package.
+The only runtime dependency is `cryptography`, used for AES-256-GCM. HKDF-SHA256, HMAC-SHA256, transcript construction, protocol framing, Session state, and validation logic are implemented directly in the reference package.
 
-## Verify the specification vectors
+## Verify specification vectors
 
 Clone the specification next to this repository:
 
@@ -98,23 +100,17 @@ Expected result:
 {"revision": "Draft 03", "passed": ["varint", "frame-encoding", "key-schedule", "secure-record", "tcp-binding"]}
 ```
 
-## Run the tests
+## Run tests
 
 ```bash
 MPX4_SPEC_DIR=../MPX-4 python -m unittest discover -s tests -v
 ```
 
-The test suite includes a real localhost TCP exchange rather than only in-memory codec tests.
+The suite includes real localhost TCP tests for CREATE, a complete single-Carrier Stream, JOIN, and two-Carrier reinjection.
 
-## Minimal TCP interoperability endpoint
+## Minimal PING/PONG endpoint
 
-Choose the same 32-octet transport key on both sides. For example:
-
-```text
-a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
-```
-
-Start the reference server:
+Server:
 
 ```bash
 python -m mpx4 server \
@@ -122,7 +118,7 @@ python -m mpx4 server \
   --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
 ```
 
-Then run the client:
+Client:
 
 ```bash
 python -m mpx4 client \
@@ -131,35 +127,9 @@ python -m mpx4 client \
   --token 15293
 ```
 
-The exchange performs:
+## Single-Carrier bidirectional Stream
 
-```text
-TCP connect
-  ↓
-MPX/4 Connection Preface
-  ↓
-CLIENT_INIT
-  ↓
-SERVER_INIT
-  ↓
-CLIENT_FINISHED
-  ↓
-SERVER_FINISHED
-  ↓
-AES-256-GCM Secure Record
-  ↓
-PING
-  ↓
-PONG
-```
-
-The minimal PING/PONG endpoint and the Stream endpoint currently support `SESSION_ACTION=CREATE`, Carrier ID 1 / Generation 0, and the AGGREGATE Scheduler. Their purpose is to provide an independent wire-level peer for implementation development, not to act as a production transport.
-
-## Bidirectional Stream CLI
-
-The 0.2 reference can exercise a real Stream lifecycle over TCP.
-
-Start the server:
+Server:
 
 ```bash
 python -m mpx4 stream-server \
@@ -169,7 +139,7 @@ python -m mpx4 stream-server \
   --reply "hello from server"
 ```
 
-Then run the client:
+Client:
 
 ```bash
 python -m mpx4 stream-client \
@@ -179,15 +149,82 @@ python -m mpx4 stream-client \
   --expect-reply "hello from server"
 ```
 
-The exchange uses explicit Session credit and Stream credit in both directions, acknowledges reliable DATA and terminal control, and completes both directions with FIN plus STREAM_CONSUMED.
+## Two-Carrier JOIN and reinjection
+
+Version 0.3 opens two ordinary TCP connections to the same listener.
+
+Carrier 1 creates the Session:
+
+```text
+TCP #1
+  -> Connection Preface
+  -> CLIENT_INIT SESSION_ACTION=CREATE
+  -> Finished
+  -> Carrier 1 / Generation 0
+```
+
+Carrier 2 then joins it:
+
+```text
+TCP #2
+  -> Connection Preface
+  -> CLIENT_INIT
+       SESSION_ID = existing Session
+       SESSION_ACTION = JOIN
+       CARRIER_ID = 2
+       GENERATION = 0
+       fresh CLIENT_NONCE
+  -> fresh Finished exchange
+  -> fresh application keys
+  -> Record sequence starts at 0
+```
+
+Start the server:
+
+```bash
+python -m mpx4 multipath-server \
+  --listen 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --expect "multipath payload"
+```
+
+Then run the client:
+
+```bash
+python -m mpx4 multipath-client \
+  --connect 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --send "multipath payload"
+```
+
+The reference sends one reliable DATA Transmission twice:
+
+```text
+Transmission N
+    |
+    +-- Attempt 1 -> Carrier 1
+    |
+    +-- Attempt 2 -> Carrier 2
+```
+
+The Server deliberately reads Carrier 2 first. Both Attempts use the same Transmission ID and identical Stream bytes. The application receives the payload once, and Session committed-byte accounting increases once.
+
+This is a deterministic reinjection conformance exercise, not yet an adaptive scheduler.
+
+## JOIN rejection behavior
+
+Draft 03 defines JOIN validation failures such as `SESSION_CONFLICT`, `SCHEDULER_MISMATCH`, and `CARRIER_CONFLICT`, but it does not define a dedicated pre-authentication handshake-error response message.
+
+The reference validates those rules and terminates an invalid JOIN handshake rather than inventing an on-wire extension.
 
 ## Continuous conformance
 
 GitHub Actions checks out the current `Dsd1001/MPX-4` specification and runs:
 
 1. unit tests;
-2. localhost TCP handshake/PING-PONG test;
-3. all implemented specification vectors.
+2. localhost TCP endpoint tests;
+3. CREATE/JOIN and reinjection tests;
+4. all implemented specification vectors.
 
 A scheduled run also checks whether newer specification changes have broken the reference implementation.
 

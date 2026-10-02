@@ -28,3 +28,15 @@ class FinalSizeError(MPXError):
 
 class TransmissionIDError(MPXError):
     """Transmission identity is conflicting or impossible."""
+
+
+class SessionConflictError(MPXError):
+    """JOIN contradicts Session-scoped parameters."""
+
+
+class CarrierConflictError(MPXError):
+    """Carrier ID / Generation is stale or conflicts with a live Carrier."""
+
+
+class SchedulerMismatchError(MPXError):
+    """JOIN does not repeat the Session Scheduler."""
