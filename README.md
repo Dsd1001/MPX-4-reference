@@ -12,7 +12,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Implemented in version 0.1:
+Implemented in version 0.2:
 
 - canonical 1/2/4/8-octet MPX VarInt;
 - Handshake Message framing;
@@ -28,14 +28,18 @@ Implemented in version 0.1:
 - TCP fragmentation and coalescing behavior;
 - minimal Session CREATE handshake;
 - encrypted PING/PONG exchange over a real TCP socket;
+- one real bidirectional Stream over TCP;
+- explicit Stream and Session credit in both directions;
+- STREAM_OPEN / OPEN_OK / DATA / ACK / FIN / STREAM_CONSUMED;
+- out-of-order reassembly, overlap checks, flow-control and final-size validation;
 - direct verification against the specification repository test vectors.
 
 Not yet implemented:
 
 - Carrier JOIN and replacement endpoint behavior;
-- Stream application data state machine;
+- multiple simultaneous Streams;
+- RESET / STOP_SENDING terminal state engine;
 - retransmission/reinjection engine;
-- Session and Stream flow-control engine;
 - tombstone/retired-identity engine;
 - multi-Carrier scheduler implementations;
 - full Draft 03 interoperability profile.
@@ -52,12 +56,15 @@ src/mpx4/
 ├── crypto.py        Draft 03 key schedule and Secure Records
 ├── tcp.py           Incremental TCP binding parser
 ├── endpoint.py      Minimal CREATE + PING/PONG reference endpoint
+├── stream.py        Stream reassembly, credit, final-size and Tx state
+├── stream_endpoint.py  Single-Carrier bidirectional Stream exchange
 ├── vectorcheck.py   Specification-vector verifier
 └── __main__.py      Command-line interface
 
 tests/
 ├── test_core.py
 ├── test_endpoint.py
+├── test_stream.py
 └── test_vectors.py
 ```
 
@@ -146,7 +153,33 @@ PING
 PONG
 ```
 
-The minimal endpoint currently supports `SESSION_ACTION=CREATE`, Carrier ID 1 / Generation 0, and the AGGREGATE Scheduler. Its purpose is to provide an independent wire-level peer for implementation development, not to act as a production transport.
+The minimal PING/PONG endpoint and the Stream endpoint currently support `SESSION_ACTION=CREATE`, Carrier ID 1 / Generation 0, and the AGGREGATE Scheduler. Their purpose is to provide an independent wire-level peer for implementation development, not to act as a production transport.
+
+## Bidirectional Stream CLI
+
+The 0.2 reference can exercise a real Stream lifecycle over TCP.
+
+Start the server:
+
+```bash
+python -m mpx4 stream-server \
+  --listen 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --expect "hello from client" \
+  --reply "hello from server"
+```
+
+Then run the client:
+
+```bash
+python -m mpx4 stream-client \
+  --connect 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --send "hello from client" \
+  --expect-reply "hello from server"
+```
+
+The exchange uses explicit Session credit and Stream credit in both directions, acknowledges reliable DATA and terminal control, and completes both directions with FIN plus STREAM_CONSUMED.
 
 ## Continuous conformance
 

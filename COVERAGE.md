@@ -1,6 +1,7 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.1  
+**Reference version:** 0.2
+
 **Protocol target:** MPX/4 Draft 03
 
 This file distinguishes implemented reference behavior from protocol areas that remain specification-only.
@@ -28,9 +29,10 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | Arbitrary TCP fragmentation | Implemented |
 | TCP coalescing | Implemented |
 | Partial record detection | Implemented |
-| Real localhost TCP test | Implemented |
+| Real localhost TCP tests | Implemented |
 | CREATE handshake | Implemented |
 | Encrypted PING/PONG | Implemented |
+| Single-Carrier bidirectional Stream | Implemented |
 | JOIN | Not yet implemented |
 | Carrier replacement | Not yet implemented |
 | CARRIER_CLOSE / SESSION_CLOSE endpoint behavior | Not yet implemented |
@@ -39,19 +41,25 @@ This file distinguishes implemented reference behavior from protocol areas that 
 
 | Area | Status |
 |---|---|
-| STREAM_DATA encoding | Implemented |
-| TRANSMISSION_ACK encoding | Implemented |
-| STREAM_CREDIT encoding | Implemented |
-| SESSION_CREDIT encoding | Implemented |
+| STREAM_OPEN / STREAM_OPEN_OK | Implemented for Client Stream 1 |
+| STREAM_DATA encode/decode | Implemented |
+| TRANSMISSION_ACK encode/decode | Implemented |
+| STREAM_CREDIT encode/decode | Implemented |
+| SESSION_CREDIT encode/decode | Implemented |
 | CREDIT_PROBE encoding | Implemented |
-| STREAM_OPEN lifecycle | Not yet implemented |
-| Bidirectional Stream delivery | Not yet implemented |
-| Reassembly | Not yet implemented |
-| Flow-control accounting | Not yet implemented |
+| STREAM_FIN encode/decode | Implemented |
+| STREAM_CONSUMED encode/decode | Implemented |
+| Bidirectional Stream delivery | Implemented for one Stream |
+| Out-of-order reassembly | Implemented |
+| Identical-overlap validation | Implemented |
+| Stream + Session flow-control accounting | Implemented |
+| Final-size validation | Implemented |
+| Session-wide local Transmission ledger | Implemented |
 | Retransmission | Not yet implemented |
 | Cross-Carrier reinjection | Not yet implemented |
-| Final-size engine | Not yet implemented |
+| RESET / STOP_SENDING state engine | Partial codec only |
 | Tombstones / retired identities | Not yet implemented |
+| Multiple simultaneous Streams | Not yet implemented |
 
 ## Multipath and schedulers
 
@@ -75,10 +83,23 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | key-schedule.json | Verified |
 | secure-record.json | Verified |
 | tcp-binding.json | Verified |
-| state-validity.json | Data available; state engine not yet implemented |
+| state-validity.json | Partially represented by executable Stream-state tests |
 
 ## Interoperability profile
 
-The reference currently covers the codec/crypto/TCP-handshake foundation of the Draft 03 interoperability profile. It does **not** yet claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
+Version 0.2 exercises the Draft 03 single-Carrier foundation through a real TCP exchange:
 
-The next implementation milestone is Stream state plus explicit Stream/Session credit. After that, Carrier JOIN and reinjection can be implemented without changing the codec or cryptographic layer.
+```text
+CREATE
+  -> SESSION_CREDIT
+  -> STREAM_OPEN / STREAM_OPEN_OK
+  -> bidirectional STREAM_CREDIT
+  -> bidirectional STREAM_DATA
+  -> TRANSMISSION_ACK
+  -> STREAM_FIN
+  -> STREAM_CONSUMED
+```
+
+It still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
+
+The next major milestone is Carrier JOIN plus two simultaneously authenticated Carriers. That enables the reference to test retransmission/reinjection and cross-Carrier ordering without changing the codec, crypto, or single-Stream flow-control foundation.

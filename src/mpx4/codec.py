@@ -33,6 +33,41 @@ class Frame:
     body: bytes
 
 
+@dataclass(frozen=True)
+class StreamData:
+    stream_id: int
+    offset: int
+    transmission_id: int
+    data: bytes
+
+
+@dataclass(frozen=True)
+class TransmissionAck:
+    stream_id: int
+    transmission_id: int
+    receiver_timestamp_us: int
+
+
+@dataclass(frozen=True)
+class StreamCredit:
+    stream_id: int
+    consumed_offset: int
+    maximum_offset: int
+
+
+@dataclass(frozen=True)
+class SessionCredit:
+    consumed_bytes: int
+    maximum_bytes: int
+
+
+@dataclass(frozen=True)
+class StreamTerminal:
+    stream_id: int
+    transmission_id: int
+    final_offset: int
+
+
 def encode_parameter(parameter: Parameter) -> bytes:
     if parameter.flags & 0xFE:
         raise ValueError("reserved Parameter flag bits must be zero")
@@ -142,6 +177,22 @@ def decode_frames(data: bytes) -> list[Frame]:
     return frames
 
 
+def _decode_exact_varints(body: bytes, count: int) -> tuple[int, ...]:
+    values: list[int] = []
+    offset = 0
+    for _ in range(count):
+        value, offset = decode_varint(body, offset)
+        values.append(value)
+    if offset != len(body):
+        raise DecodeError("unexpected trailing Frame body octets")
+    return tuple(values)
+
+
+def _expect_frame(frame: Frame, expected: FrameType) -> None:
+    if frame.type != int(expected):
+        raise DecodeError(f"expected {expected.name}")
+
+
 def encode_ping(token: int) -> bytes:
     return encode_frame(FrameType.PING, encode_varint(token))
 
@@ -156,6 +207,51 @@ def decode_token_frame(frame: Frame) -> int:
     return decode_varint_exact(frame.body)
 
 
+def encode_stream_open(stream_id: int, transmission_id: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STREAM_OPEN fields")
+    return encode_frame(
+        FrameType.STREAM_OPEN,
+        encode_varint(stream_id) + encode_varint(transmission_id),
+    )
+
+
+def decode_stream_open(frame: Frame) -> tuple[int, int]:
+    _expect_frame(frame, FrameType.STREAM_OPEN)
+    stream_id, transmission_id = _decode_exact_varints(frame.body, 2)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STREAM_OPEN fields")
+    return stream_id, transmission_id
+
+
+def encode_stream_open_ok(stream_id: int, transmission_id: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STREAM_OPEN_OK fields")
+    return encode_frame(
+        FrameType.STREAM_OPEN_OK,
+        encode_varint(stream_id) + encode_varint(transmission_id),
+    )
+
+
+def decode_stream_open_ok(frame: Frame) -> tuple[int, int]:
+    _expect_frame(frame, FrameType.STREAM_OPEN_OK)
+    stream_id, transmission_id = _decode_exact_varints(frame.body, 2)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STREAM_OPEN_OK fields")
+    return stream_id, transmission_id
+
+
+def encode_stream_open_reject(stream_id: int, transmission_id: int, error_code: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STREAM_OPEN_REJECT fields")
+    return encode_frame(
+        FrameType.STREAM_OPEN_REJECT,
+        encode_varint(stream_id)
+        + encode_varint(transmission_id)
+        + encode_varint(error_code),
+    )
+
+
 def encode_stream_data(stream_id: int, offset: int, transmission_id: int, data: bytes) -> bytes:
     if stream_id <= 0 or transmission_id <= 0 or not data:
         raise ValueError("invalid STREAM_DATA fields")
@@ -168,7 +264,21 @@ def encode_stream_data(stream_id: int, offset: int, transmission_id: int, data: 
     return encode_frame(FrameType.STREAM_DATA, body)
 
 
+def decode_stream_data(frame: Frame) -> StreamData:
+    _expect_frame(frame, FrameType.STREAM_DATA)
+    offset = 0
+    stream_id, offset = decode_varint(frame.body, offset)
+    stream_offset, offset = decode_varint(frame.body, offset)
+    transmission_id, offset = decode_varint(frame.body, offset)
+    data = bytes(frame.body[offset:])
+    if stream_id <= 0 or transmission_id <= 0 or not data:
+        raise DecodeError("invalid STREAM_DATA fields")
+    return StreamData(stream_id, stream_offset, transmission_id, data)
+
+
 def encode_transmission_ack(stream_id: int, transmission_id: int, timestamp_us: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid TRANSMISSION_ACK fields")
     body = (
         encode_varint(stream_id)
         + encode_varint(transmission_id)
@@ -177,7 +287,17 @@ def encode_transmission_ack(stream_id: int, transmission_id: int, timestamp_us: 
     return encode_frame(FrameType.TRANSMISSION_ACK, body)
 
 
+def decode_transmission_ack(frame: Frame) -> TransmissionAck:
+    _expect_frame(frame, FrameType.TRANSMISSION_ACK)
+    stream_id, transmission_id, timestamp_us = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid TRANSMISSION_ACK fields")
+    return TransmissionAck(stream_id, transmission_id, timestamp_us)
+
+
 def encode_stream_credit(stream_id: int, consumed_offset: int, maximum_offset: int) -> bytes:
+    if stream_id <= 0:
+        raise ValueError("invalid Stream ID")
     if maximum_offset < consumed_offset:
         raise ValueError("decreasing STREAM_CREDIT")
     body = (
@@ -188,11 +308,88 @@ def encode_stream_credit(stream_id: int, consumed_offset: int, maximum_offset: i
     return encode_frame(FrameType.STREAM_CREDIT, body)
 
 
+def decode_stream_credit(frame: Frame) -> StreamCredit:
+    _expect_frame(frame, FrameType.STREAM_CREDIT)
+    stream_id, consumed, maximum = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or maximum < consumed:
+        raise DecodeError("invalid STREAM_CREDIT")
+    return StreamCredit(stream_id, consumed, maximum)
+
+
 def encode_session_credit(consumed_bytes: int, maximum_bytes: int) -> bytes:
     if maximum_bytes < consumed_bytes:
         raise ValueError("decreasing SESSION_CREDIT")
     body = encode_varint(consumed_bytes) + encode_varint(maximum_bytes)
     return encode_frame(FrameType.SESSION_CREDIT, body)
+
+
+def decode_session_credit(frame: Frame) -> SessionCredit:
+    _expect_frame(frame, FrameType.SESSION_CREDIT)
+    consumed, maximum = _decode_exact_varints(frame.body, 2)
+    if maximum < consumed:
+        raise DecodeError("invalid SESSION_CREDIT")
+    return SessionCredit(consumed, maximum)
+
+
+def encode_stream_fin(stream_id: int, transmission_id: int, final_offset: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STREAM_FIN fields")
+    return encode_frame(
+        FrameType.STREAM_FIN,
+        encode_varint(stream_id)
+        + encode_varint(transmission_id)
+        + encode_varint(final_offset),
+    )
+
+
+def decode_stream_fin(frame: Frame) -> StreamTerminal:
+    _expect_frame(frame, FrameType.STREAM_FIN)
+    stream_id, transmission_id, final_offset = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STREAM_FIN fields")
+    return StreamTerminal(stream_id, transmission_id, final_offset)
+
+
+def encode_stream_consumed(stream_id: int, transmission_id: int, final_offset: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STREAM_CONSUMED fields")
+    return encode_frame(
+        FrameType.STREAM_CONSUMED,
+        encode_varint(stream_id)
+        + encode_varint(transmission_id)
+        + encode_varint(final_offset),
+    )
+
+
+def decode_stream_consumed(frame: Frame) -> StreamTerminal:
+    _expect_frame(frame, FrameType.STREAM_CONSUMED)
+    stream_id, transmission_id, final_offset = _decode_exact_varints(frame.body, 3)
+    if stream_id <= 0 or transmission_id <= 0:
+        raise DecodeError("invalid STREAM_CONSUMED fields")
+    return StreamTerminal(stream_id, transmission_id, final_offset)
+
+
+def encode_reset_stream(stream_id: int, transmission_id: int, final_offset: int, error_code: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid RESET_STREAM fields")
+    return encode_frame(
+        FrameType.RESET_STREAM,
+        encode_varint(stream_id)
+        + encode_varint(transmission_id)
+        + encode_varint(final_offset)
+        + encode_varint(error_code),
+    )
+
+
+def encode_stop_sending(stream_id: int, transmission_id: int, error_code: int) -> bytes:
+    if stream_id <= 0 or transmission_id <= 0:
+        raise ValueError("invalid STOP_SENDING fields")
+    return encode_frame(
+        FrameType.STOP_SENDING,
+        encode_varint(stream_id)
+        + encode_varint(transmission_id)
+        + encode_varint(error_code),
+    )
 
 
 def encode_credit_probe(stream_id: int) -> bytes:

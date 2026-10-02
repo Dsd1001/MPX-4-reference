@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .endpoint import run_client, run_server
+from .stream_endpoint import run_stream_client, run_stream_server
 from .vectorcheck import verify_all
 
 
@@ -31,15 +32,21 @@ def split_address(value: str) -> tuple[str, int]:
 
 
 def result_json(result) -> str:
-    return json.dumps(
-        {
+    if hasattr(result, "ping_token"):
+        payload = {
             "session_id": result.session_id.hex(),
             "carrier_id": result.carrier_id,
             "scheduler": result.scheduler,
             "ping_token": result.ping_token,
-        },
-        sort_keys=True,
-    )
+        }
+    else:
+        payload = {
+            "session_id": result.session_id.hex(),
+            "stream_id": result.stream_id,
+            "sent_utf8": result.sent.decode("utf-8", "replace"),
+            "received_utf8": result.received.decode("utf-8", "replace"),
+        }
+    return json.dumps(payload, sort_keys=True)
 
 
 def main() -> None:
@@ -49,14 +56,32 @@ def main() -> None:
     vectors = sub.add_parser("vectors", help="verify the MPX/4 specification test vectors")
     vectors.add_argument("--spec", required=True, type=Path)
 
-    server = sub.add_parser("server", help="run the minimal Draft 03 TCP reference server")
+    server = sub.add_parser("server", help="run the minimal Draft 03 PING/PONG server")
     server.add_argument("--listen", default="127.0.0.1:24004")
     server.add_argument("--key", required=True, type=parse_key)
 
-    client = sub.add_parser("client", help="run the minimal Draft 03 TCP reference client")
+    client = sub.add_parser("client", help="run the minimal Draft 03 PING/PONG client")
     client.add_argument("--connect", default="127.0.0.1:24004")
     client.add_argument("--key", required=True, type=parse_key)
     client.add_argument("--token", type=int, default=1)
+
+    stream_server = sub.add_parser(
+        "stream-server",
+        help="run the Draft 03 single-Carrier bidirectional Stream reference server",
+    )
+    stream_server.add_argument("--listen", default="127.0.0.1:24004")
+    stream_server.add_argument("--key", required=True, type=parse_key)
+    stream_server.add_argument("--expect", required=True)
+    stream_server.add_argument("--reply", required=True)
+
+    stream_client = sub.add_parser(
+        "stream-client",
+        help="run the Draft 03 single-Carrier bidirectional Stream reference client",
+    )
+    stream_client.add_argument("--connect", default="127.0.0.1:24004")
+    stream_client.add_argument("--key", required=True, type=parse_key)
+    stream_client.add_argument("--send", required=True)
+    stream_client.add_argument("--expect-reply", required=True)
 
     args = parser.parse_args()
 
@@ -74,6 +99,37 @@ def main() -> None:
     if args.command == "client":
         host, port = split_address(args.connect)
         print(result_json(run_client(host, port, args.key, token=args.token)))
+        return
+
+    if args.command == "stream-server":
+        host, port = split_address(args.listen)
+        print(json.dumps({"listening": args.listen, "mode": "stream"}), flush=True)
+        print(
+            result_json(
+                run_stream_server(
+                    host,
+                    port,
+                    args.key,
+                    expected_payload=args.expect.encode(),
+                    reply=args.reply.encode(),
+                )
+            )
+        )
+        return
+
+    if args.command == "stream-client":
+        host, port = split_address(args.connect)
+        print(
+            result_json(
+                run_stream_client(
+                    host,
+                    port,
+                    args.key,
+                    payload=args.send.encode(),
+                    reply_expected=args.expect_reply.encode(),
+                )
+            )
+        )
         return
 
 
