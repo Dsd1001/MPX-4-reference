@@ -30,7 +30,7 @@ from .constants import (
 from .crypto import RecordCipher, derive_key_schedule
 from .errors import AuthenticationError, DecodeError
 from .tcp import recv_handshake, recv_preface, recv_wire_record
-from .varint import encode_varint
+from .varint import decode_varint, encode_varint
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class ClientInitParameters:
     client_nonce: bytes
     limits: EndpointLimits
     scheduler: int
+    path_capacity: tuple[int, int] | None = None
 
 
 def _preface() -> bytes:
@@ -72,11 +73,23 @@ def build_client_init(
     generation: int = 0,
     scheduler: int = int(SchedulerID.AGGREGATE),
     action: int = int(SessionAction.CREATE),
+    path_capacity: tuple[int, int] | None = None,
 ) -> bytes:
     if len(session_id) != 16 or session_id == b"\x00" * 16:
         raise ValueError("SESSION_ID must be 16 non-zero random octets")
     if len(client_nonce) != 32:
         raise ValueError("CLIENT_NONCE must be 32 octets")
+    if scheduler not in {int(value) for value in SchedulerID}:
+        raise ValueError("unsupported Scheduler ID")
+    if scheduler == int(SchedulerID.WEIGHTED):
+        if path_capacity is None:
+            raise ValueError("WEIGHTED requires PATH_CAPACITY")
+        downlink, uplink = path_capacity
+        if not 1 <= downlink <= 65535 or not 0 <= uplink <= 65535:
+            raise ValueError("invalid PATH_CAPACITY units")
+    elif path_capacity is not None:
+        raise ValueError("PATH_CAPACITY is valid only for WEIGHTED")
+
     parameters = [
         parameter_bytes(ParameterType.SESSION_ID, session_id),
         parameter_varint(ParameterType.SESSION_ACTION, action),
@@ -88,6 +101,14 @@ def build_client_init(
         parameter_varint(ParameterType.MAX_STREAMS, limits.max_streams),
         parameter_varint(ParameterType.SCHEDULER, scheduler),
     ]
+    if path_capacity is not None:
+        downlink, uplink = path_capacity
+        parameters.append(
+            parameter_bytes(
+                ParameterType.PATH_CAPACITY,
+                encode_varint(downlink) + encode_varint(uplink),
+            )
+        )
     return encode_handshake_message(
         HandshakeType.CLIENT_INIT,
         encode_parameters(parameters),
@@ -128,7 +149,8 @@ def parse_client_init(raw_message_body: bytes) -> ClientInitParameters:
         int(ParameterType.MAX_STREAMS),
         int(ParameterType.SCHEDULER),
     }
-    if set(params) != required:
+    allowed = required | {int(ParameterType.PATH_CAPACITY)}
+    if not required.issubset(params) or not set(params).issubset(allowed):
         raise DecodeError("reference endpoint requires the Draft 03 Core parameter set")
 
     session_id = params[int(ParameterType.SESSION_ID)].value
@@ -163,8 +185,24 @@ def parse_client_init(raw_message_body: bytes) -> ClientInitParameters:
         raise DecodeError("invalid MAX_STREAMS")
 
     scheduler = parameter_varint_value(params[int(ParameterType.SCHEDULER)])
-    if scheduler != int(SchedulerID.AGGREGATE):
-        raise DecodeError("reference endpoint currently supports AGGREGATE only")
+    if scheduler not in {int(value) for value in SchedulerID}:
+        raise DecodeError("unsupported Scheduler ID")
+
+    capacity_parameter = params.get(int(ParameterType.PATH_CAPACITY))
+    path_capacity = None
+    if scheduler == int(SchedulerID.WEIGHTED):
+        if capacity_parameter is None:
+            raise DecodeError("WEIGHTED requires PATH_CAPACITY")
+        offset = 0
+        downlink, offset = decode_varint(capacity_parameter.value, offset)
+        uplink, offset = decode_varint(capacity_parameter.value, offset)
+        if offset != len(capacity_parameter.value):
+            raise DecodeError("invalid PATH_CAPACITY encoding")
+        if not 1 <= downlink <= 65535 or not 0 <= uplink <= 65535:
+            raise DecodeError("invalid PATH_CAPACITY units")
+        path_capacity = (downlink, uplink)
+    elif capacity_parameter is not None:
+        raise DecodeError("PATH_CAPACITY is valid only for WEIGHTED")
 
     return ClientInitParameters(
         session_id=session_id,
@@ -174,6 +212,7 @@ def parse_client_init(raw_message_body: bytes) -> ClientInitParameters:
         client_nonce=client_nonce,
         limits=limits,
         scheduler=scheduler,
+        path_capacity=path_capacity,
     )
 
 

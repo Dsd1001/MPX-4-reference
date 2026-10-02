@@ -4,7 +4,14 @@ import threading
 import unittest
 
 from mpx4.errors import FinalSizeError, FlowControlError, StreamStateError, TransmissionIDError
-from mpx4.stream import ReceiveFlow, ReceiveStream, SendFlow, TransmissionLedger
+from mpx4.stream import (
+    ClientStreamRegistry,
+    ReceiveFlow,
+    ReceiveStream,
+    SendFlow,
+    ServerStreamRegistry,
+    TransmissionLedger,
+)
 from mpx4.stream_endpoint import client_stream_exchange, server_stream_exchange
 
 
@@ -48,6 +55,33 @@ class StreamStateTests(unittest.TestCase):
         ledger.allocate(1, "data")
         with self.assertRaises(TransmissionIDError):
             ledger.settle(1, 2)
+
+
+class StreamRegistryTests(unittest.TestCase):
+    def test_client_allocates_positive_odd_ids_monotonically_and_never_reuses(self):
+        registry = ClientStreamRegistry(max_active=2)
+        first = registry.allocate()
+        second = registry.allocate()
+        self.assertEqual((first, second), (1, 3))
+        with self.assertRaises(StreamStateError):
+            registry.allocate()
+
+        registry.retire(first)
+        third = registry.allocate()
+        self.assertEqual(third, 5)
+        self.assertNotIn(1, registry.active)
+        self.assertIn(1, registry.used)
+
+    def test_server_allows_cross_carrier_open_reordering_but_rejects_reuse(self):
+        registry = ServerStreamRegistry(max_active=2)
+        registry.accept_open(3)
+        registry.accept_open(1)
+        self.assertEqual(registry.active, {1, 3})
+        registry.retire(1)
+        with self.assertRaises(StreamStateError):
+            registry.accept_open(1)
+        with self.assertRaises(StreamStateError):
+            registry.accept_open(2)
 
 
 class StreamEndpointTests(unittest.TestCase):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpx4-reference"
-version = "0.5.0"
+version = "0.6.0"
 description = "Reference implementation and interoperability harness for MPX/4"
 readme = "README.md"
 requires-python = ">=3.11"

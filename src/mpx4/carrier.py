@@ -195,6 +195,7 @@ def client_create_carrier(
     carrier_id: int = 1,
     generation: int = 0,
     scheduler: int = int(SchedulerID.AGGREGATE),
+    path_capacity: tuple[int, int] | None = None,
 ) -> tuple[SecureCarrier, ClientSessionState]:
     preface = _preface()
     client_init = build_client_init(
@@ -205,6 +206,7 @@ def client_create_carrier(
         generation=generation,
         scheduler=scheduler,
         action=int(SessionAction.CREATE),
+        path_capacity=path_capacity,
     )
     sock.sendall(preface + client_init)
 
@@ -321,6 +323,7 @@ def client_join_carrier(
     generation: int,
     client_nonce: bytes,
     carrier_receive_limits: EndpointLimits | None = None,
+    path_capacity: tuple[int, int] | None = None,
 ) -> SecureCarrier:
     state.validate_local_join(carrier_id, generation)
 
@@ -342,6 +345,7 @@ def client_join_carrier(
         generation=generation,
         scheduler=state.scheduler,
         action=int(SessionAction.JOIN),
+        path_capacity=path_capacity,
     )
     sock.sendall(preface + client_init)
 

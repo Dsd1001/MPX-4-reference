@@ -250,3 +250,55 @@ class TransmissionLedger:
         if pending is None or pending.kind != "open":
             raise TransmissionIDError("STREAM_OPEN_OK references unexpected Transmission")
         self.settle(stream_id, transmission_id)
+
+
+@dataclass
+class ClientStreamRegistry:
+    max_active: int
+    next_stream_id: int = 1
+    active: set[int] = field(default_factory=set)
+    used: set[int] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_active <= 2048:
+            raise ValueError("invalid MAX_STREAMS")
+
+    def allocate(self) -> int:
+        if len(self.active) >= self.max_active:
+            raise StreamStateError("peer MAX_STREAMS limit reached")
+        stream_id = self.next_stream_id
+        self.next_stream_id += 2
+        self.active.add(stream_id)
+        self.used.add(stream_id)
+        return stream_id
+
+    def retire(self, stream_id: int) -> None:
+        if stream_id not in self.used:
+            raise StreamStateError("cannot retire unknown Stream ID")
+        self.active.discard(stream_id)
+
+
+@dataclass
+class ServerStreamRegistry:
+    max_active: int
+    active: set[int] = field(default_factory=set)
+    used: set[int] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_active <= 2048:
+            raise ValueError("invalid MAX_STREAMS")
+
+    def accept_open(self, stream_id: int) -> None:
+        if stream_id <= 0 or stream_id % 2 == 0:
+            raise StreamStateError("invalid Client Stream ID")
+        if stream_id in self.used:
+            raise StreamStateError("Stream ID reuse is forbidden")
+        if len(self.active) >= self.max_active:
+            raise StreamStateError("local MAX_STREAMS limit reached")
+        self.used.add(stream_id)
+        self.active.add(stream_id)
+
+    def retire(self, stream_id: int) -> None:
+        if stream_id not in self.used:
+            raise StreamStateError("cannot retire unknown Stream ID")
+        self.active.discard(stream_id)

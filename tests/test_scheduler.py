@@ -2,7 +2,12 @@ import unittest
 
 from mpx4.carrier import CarrierIdentity
 from mpx4.reliability import ReliabilityLoop
-from mpx4.scheduler import AggregateScheduler
+from mpx4.scheduler import (
+    AggregateScheduler,
+    AutoScheduler,
+    ProtectScheduler,
+    WeightedScheduler,
+)
 from mpx4.stream import TransmissionLedger
 
 
@@ -160,6 +165,61 @@ class AggregateSchedulerTests(unittest.TestCase):
         self.assertLess(metrics.min_rtt_s, metrics.latest_rtt_s)
         self.assertNotEqual(metrics.delivery_rate_bps, 100_000.0)
         self.assertEqual(metrics.outstanding_bytes, 0)
+
+
+class ProtectAndAutoSchedulerTests(unittest.TestCase):
+    def test_protect_keeps_new_traffic_on_primary_but_allows_backup_retry(self):
+        c1 = DummyCarrier(1)
+        c2 = DummyCarrier(2)
+        scheduler = ProtectScheduler()
+        scheduler.register(c1, latest_rtt_s=0.030, role="primary")
+        scheduler.register(c2, latest_rtt_s=0.005, role="backup")
+
+        self.assertEqual(scheduler.choose(100).identity, (1, 0))
+        self.assertEqual(
+            scheduler.choose(100, previous_attempts=((1, 0),)).identity,
+            (2, 0),
+        )
+
+    def test_auto_switches_to_protect_when_rtt_diverges(self):
+        c1 = DummyCarrier(1)
+        c2 = DummyCarrier(2)
+        scheduler = AutoScheduler(rtt_ratio_threshold=2.0)
+        scheduler.register(c1, latest_rtt_s=0.010)
+        scheduler.register(c2, latest_rtt_s=0.012)
+        self.assertEqual(scheduler.refresh_mode(), "aggregate")
+
+        scheduler.observe_rtt((2, 0), 0.030)
+        self.assertEqual(scheduler.refresh_mode(), "protect")
+        self.assertEqual(scheduler.choose(100).identity, (1, 0))
+
+    def test_auto_switches_to_protect_after_failure_penalty(self):
+        c1 = DummyCarrier(1)
+        c2 = DummyCarrier(2)
+        scheduler = AutoScheduler()
+        scheduler.register(c1, latest_rtt_s=0.010)
+        scheduler.register(c2, latest_rtt_s=0.011)
+        self.assertEqual(scheduler.refresh_mode(), "aggregate")
+        scheduler.metrics_for((2, 0)).failures = 1
+        self.assertEqual(scheduler.refresh_mode(), "protect")
+
+    def test_weighted_capacity_clamps_effective_rate(self):
+        c1 = DummyCarrier(1)
+        c2 = DummyCarrier(2)
+        scheduler = WeightedScheduler()
+        scheduler.register(
+            c1,
+            latest_rtt_s=0.010,
+            delivery_rate_bps=10_000_000.0,
+            configured_capacity_bps=100_000.0,
+        )
+        scheduler.register(
+            c2,
+            latest_rtt_s=0.010,
+            delivery_rate_bps=10_000_000.0,
+            configured_capacity_bps=1_000_000.0,
+        )
+        self.assertEqual(scheduler.choose(10_000).identity, (2, 0))
 
 
 if __name__ == "__main__":
