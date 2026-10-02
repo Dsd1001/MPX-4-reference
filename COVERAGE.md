@@ -1,6 +1,6 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.4
+**Reference version:** 0.5
 
 **Protocol target:** MPX/4 Draft 03
 
@@ -70,10 +70,12 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 | Cross-Carrier reinjection | Implemented for one deterministic DATA Transmission |
 | Pending wire Frame retained across Carrier loss | Implemented |
 | Automatic reinjection after replacement | Implemented |
-| Attempt history records Carrier ID / Generation | Implemented |
+| Timer-driven retry eligibility | Implemented |
+| Immediate retry after last Carrier becomes inactive | Implemented |
+| Attempt history records Carrier ID / Generation and send time | Implemented |
 | Duplicate application suppression | Implemented |
 | Reinjection consumes no additional logical credit | Implemented |
-| Timer-driven retransmission | Not yet implemented |
+| Timer-driven retransmission / reinjection loop | Implemented |
 | RESET / STOP_SENDING state engine | Partial codec only |
 | Tombstones / retired identities | Not yet implemented |
 | Multiple simultaneous Streams | Not yet implemented |
@@ -88,11 +90,18 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 | Cross-Carrier arrival-order test | Implemented |
 | Surviving Carrier remains usable through peer Carrier loss | Implemented |
 | Carrier replacement Gen 0 -> Gen 1 | Implemented |
+| Carrier latest/min RTT | Implemented |
+| Carrier observed delivery rate | Implemented |
+| Carrier outstanding scheduled bytes | Implemented |
+| Carrier role / failure / penalty state | Implemented |
+| Minimal AGGREGATE scheduler policy engine | Implemented |
+| Queue-pressure-aware path selection | Implemented |
+| Prefer unused Carrier for later Attempt | Implemented |
+| Ambiguous multi-Attempt ACK excluded from rate attribution | Implemented |
 | AUTO scheduler | Not yet implemented |
-| AGGREGATE scheduler policy engine | Not yet implemented |
 | PROTECT scheduler | Not yet implemented |
 | WEIGHTED scheduler | Not yet implemented |
-| PATH_CAPACITY behavior | Not yet implemented |
+| PATH_CAPACITY configured-capacity clamp | Implemented in local metrics; handshake behavior remains partial |
 
 ## Specification vectors
 
@@ -107,11 +116,14 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 
 ## Interoperability profile
 
-Version 0.4 extends the two-Carrier Session with unexpected transport loss and replacement:
+Version 0.5 adds a Session reliability loop and a minimal AGGREGATE path-selection policy on top of the 0.4 replacement scenario:
 
 ```text
 Carrier 1 / Gen 0
   remains active throughout
+
+Scheduler chooses Carrier 2 / Gen 0
+  using RTT + outstanding/rate score
 
 Carrier 2 / Gen 0
   Attempt N sent
@@ -126,6 +138,10 @@ Carrier 2 / Gen 1
   fresh traffic keys
   Record sequence = 0
        |
+ReliabilityLoop.poll()
+  sees last Carrier inactive
+  chooses best unused active Carrier
+       |
 ledger reinjects the original wire Frame
        |
 TRANSMISSION_ACK N
@@ -138,4 +154,4 @@ Result:
 
 It still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
 
-The next major milestone is timer-driven retransmission plus a small scheduler policy layer that chooses among multiple active Carriers instead of using deterministic test placement.
+The next major milestone is to extend the scheduler surface beyond the minimal AGGREGATE policy: measured PING/PONG-driven path sampling, multiple simultaneous Streams, and then PROTECT/AUTO behavior with explicit degraded-path roles.

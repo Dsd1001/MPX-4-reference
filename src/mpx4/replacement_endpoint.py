@@ -37,7 +37,8 @@ from .codec import (
 from .constants import FrameType
 from .endpoint import EndpointLimits
 from .errors import CarrierLostError, DecodeError, FinalSizeError
-from .reliability import reinject_outstanding, send_tracked_attempt
+from .reliability import ReliabilityLoop, send_tracked_attempt
+from .scheduler import AggregateScheduler
 from .stream import ReceiveFlow, ReceiveStream, SendFlow, TransmissionLedger
 
 
@@ -51,6 +52,8 @@ class ReplacementExchangeResult:
     stream_id: int
     transmission_id: int
     attempts: tuple[tuple[int, int], ...]
+    scheduler_initial_carrier: tuple[int, int]
+    recovery_reason: str
     failed_carrier_inactive: bool
     replacement_generation: int
     replacement_first_record_sequence: int
@@ -327,6 +330,22 @@ def client_replacement_exchange(
             recv_flow = ReceiveFlow()
             recv_stream = ReceiveStream(stream_id)
             ledger = TransmissionLedger()
+            scheduler = AggregateScheduler()
+            scheduler.register(
+                carrier1,
+                latest_rtt_s=0.080,
+                delivery_rate_bps=1_000_000.0,
+            )
+            scheduler.register(
+                failed_carrier,
+                latest_rtt_s=0.010,
+                delivery_rate_bps=1_000_000.0,
+            )
+            reliability = ReliabilityLoop(
+                ledger,
+                scheduler,
+                retransmit_after_s=0.250,
+            )
 
             open_tx = ledger.allocate(stream_id, "open")
             open_frame = encode_stream_open(stream_id, open_tx)
@@ -366,7 +385,13 @@ def client_replacement_exchange(
             )
             ledger.bind_frame(data_tx, data_frame)
             send_flow.commit(stream_id, len(payload))
-            send_tracked_attempt(failed_carrier, ledger, data_tx)
+            initial_attempt = reliability.transmit_new(data_tx)
+            initial_identity = (
+                initial_attempt.carrier_id,
+                initial_attempt.generation,
+            )
+            if initial_identity != (2, 0):
+                raise DecodeError("AGGREGATE scheduler did not choose the lower-delay Carrier")
 
             # PING on the surviving Carrier is only a deterministic test
             # synchronization point. The Server closes Carrier 2 after seeing it
@@ -383,7 +408,7 @@ def client_replacement_exchange(
             try:
                 failed_carrier.recv()
             except CarrierLostError:
-                pass
+                scheduler.mark_failure((2, 0))
             else:
                 raise DecodeError("failed Carrier did not report transport loss")
 
@@ -412,13 +437,18 @@ def client_replacement_exchange(
                     raise DecodeError("replacement reused failed Carrier traffic keys")
 
                 first_sequence = replacement.sender.sequence_number
-                reinjected = reinject_outstanding(
+                scheduler.register(
                     replacement,
-                    ledger,
-                    transmission_ids=(data_tx,),
+                    latest_rtt_s=0.010,
+                    delivery_rate_bps=1_000_000.0,
                 )
-                if reinjected != (data_tx,):
-                    raise DecodeError("outstanding DATA was not reinjected")
+                scheduled = reliability.poll()
+                if len(scheduled) != 1 or scheduled[0].transmission_id != data_tx:
+                    raise DecodeError("reliability loop did not reinject outstanding DATA")
+                if scheduled[0].reason != "carrier-loss":
+                    raise DecodeError("replacement reinjection used wrong trigger")
+                if (scheduled[0].carrier_id, scheduled[0].generation) != (2, 1):
+                    raise DecodeError("scheduler did not choose the replacement Carrier")
                 data_attempts = tuple(ledger.pending[data_tx].attempts)
 
                 frames = replacement.recv()
@@ -428,7 +458,11 @@ def client_replacement_exchange(
                 ):
                     raise DecodeError("replacement DATA was not acknowledged")
                 ack = decode_transmission_ack(frames[0])
-                ledger.settle(ack.stream_id, ack.transmission_id)
+                reliability.acknowledge(
+                    ack.stream_id,
+                    ack.transmission_id,
+                    ack_carrier=(2, 1),
+                )
 
                 _finish_client_direction(
                     carrier1,
@@ -444,6 +478,8 @@ def client_replacement_exchange(
                     stream_id=stream_id,
                     transmission_id=data_tx,
                     attempts=data_attempts,
+                    scheduler_initial_carrier=initial_identity,
+                    recovery_reason=scheduled[0].reason,
                     failed_carrier_inactive=not failed_carrier.active,
                     replacement_generation=replacement.identity.generation,
                     replacement_first_record_sequence=first_sequence,
@@ -586,6 +622,8 @@ def server_replacement_exchange(
                     stream_id=stream_id,
                     transmission_id=data.transmission_id,
                     attempts=((2, 0), (2, 1)),
+                    scheduler_initial_carrier=(2, 0),
+                    recovery_reason="carrier-loss",
                     failed_carrier_inactive=not failed_carrier.active,
                     replacement_generation=replacement.identity.generation,
                     replacement_first_record_sequence=first_sequence,

@@ -60,6 +60,8 @@ class CarrierReplacementTests(unittest.TestCase):
             self.assertEqual(result.session_id, SESSION_ID)
             self.assertEqual(result.payload, payload)
             self.assertEqual(result.attempts, ((2, 0), (2, 1)))
+            self.assertEqual(result.scheduler_initial_carrier, (2, 0))
+            self.assertEqual(result.recovery_reason, "carrier-loss")
             self.assertTrue(result.failed_carrier_inactive)
             self.assertEqual(result.replacement_generation, 1)
             self.assertEqual(result.replacement_first_record_sequence, 0)

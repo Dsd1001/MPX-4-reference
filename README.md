@@ -4,7 +4,7 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
-**Reference version:** 0.4.0
+**Reference version:** 0.5.0
 
 **Language:** Python 3.11+
 
@@ -14,7 +14,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Version 0.4 implements:
+Version 0.5 implements:
 
 - canonical MPX VarInt;
 - Handshake Message and Parameter codec;
@@ -33,13 +33,18 @@ Version 0.4 implements:
 - same-ID higher-Generation Carrier replacement;
 - outstanding Transmission retention across transport loss;
 - automatic reinjection of a stored wire Frame onto the replacement Carrier;
+- a timer-driven reliability loop for outstanding Transmissions;
+- a minimal AGGREGATE reference scheduler using RTT, delivery rate, outstanding bytes, and penalty state;
+- immediate reinjection after Carrier loss without waiting for the retry timer;
+- timeout-driven reinjection to an unused active Carrier;
 - duplicate application-delivery suppression;
 - Session-credit accounting that counts reinjection only once;
 - direct verification against the specification repository test vectors.
 
 Not yet implemented:
 
-- timer-driven retransmission and adaptive scheduler-driven reinjection;
+- AUTO / PROTECT / WEIGHTED scheduler policy engines;
+- production-grade adaptive loss detection and congestion interaction;
 - multiple simultaneous Streams;
 - RESET / STOP_SENDING terminal state engine;
 - tombstone / retired-identity engine;
@@ -61,7 +66,8 @@ src/mpx4/
 ├── stream.py             Reassembly, credit, final-size and Tx state
 ├── stream_endpoint.py    Single-Carrier Stream exchange
 ├── carrier.py            CREATE/JOIN Carrier lifecycle and Session state
-├── reliability.py        Pending Transmission / Attempt reinjection helpers
+├── reliability.py        Timer-driven Transmission reliability loop
+├── scheduler.py          Minimal AGGREGATE path metrics and selection policy
 ├── multipath_endpoint.py Two-Carrier reinjection reference exchange
 ├── replacement_endpoint.py Carrier-loss and Generation replacement exchange
 ├── vectorcheck.py        Specification-vector verifier
@@ -73,6 +79,7 @@ tests/
 ├── test_stream.py
 ├── test_multipath.py
 ├── test_replacement.py
+├── test_scheduler.py
 └── test_vectors.py
 ```
 
@@ -260,6 +267,25 @@ python -m mpx4 replacement-client \
 ```
 
 The old Carrier becomes inactive, the surviving Carrier remains active, Session and Stream state are preserved, Carrier 2 advances from Generation 0 to Generation 1, and the outstanding DATA Transmission is reinjected without changing its Transmission ID or consuming logical credit a second time.
+
+In 0.5 this path is driven by the same scheduler/reliability loop used by the unit tests. The initial DATA Attempt is selected by the local AGGREGATE score; after Carrier loss, `ReliabilityLoop.poll()` notices that the last Attempt used an inactive Carrier and immediately schedules a new Attempt on the best active Carrier.
+
+## Reference AGGREGATE policy
+
+Draft 03 requires Carrier metrics and leaves the exact selection algorithm implementation-defined. The reference uses this local score:
+
+```text
+predicted completion
+  = latest RTT / 2
+  + (outstanding bytes + candidate Frame bytes) / effective delivery rate
+  + penalty
+```
+
+For a later Attempt, an active Carrier not yet used by that Transmission is preferred when one exists. This makes a timeout naturally become reinjection when another path is available; if every active Carrier has already been tried, retransmission on a previously used Carrier remains possible.
+
+The reference maintains latest/minimum RTT, delivery rate, outstanding scheduled bytes, configured capacity when present, role, failures, and penalty state. A single-Attempt acknowledgement returned on the same Carrier may update path RTT/rate. Once a Transmission has multiple Attempts, the acknowledgement settles reliability state but is not treated as an unambiguous per-Carrier delivery-rate sample.
+
+Timer tests use an injected fake monotonic clock so retry boundaries are deterministic. The real TCP replacement CLI uses the same `ReliabilityLoop` and scheduler objects.
 
 ## JOIN rejection behavior
 

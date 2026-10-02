@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 
 from .errors import (
     FinalSizeError,
@@ -175,6 +176,13 @@ class PendingTransmission:
     kind: str
     wire_frame: bytes | None = None
     attempts: list[tuple[int, int]] = field(default_factory=list)
+    attempt_sent_at: list[float] = field(default_factory=list)
+
+    @property
+    def last_attempt_at(self) -> float | None:
+        if not self.attempt_sent_at:
+            return None
+        return self.attempt_sent_at[-1]
 
 
 @dataclass
@@ -202,6 +210,8 @@ class TransmissionLedger:
         transmission_id: int,
         carrier_id: int,
         generation: int,
+        *,
+        sent_at: float | None = None,
     ) -> None:
         pending = self.pending.get(transmission_id)
         if pending is None:
@@ -209,6 +219,7 @@ class TransmissionLedger:
         if pending.wire_frame is None:
             raise TransmissionIDError("Transmission has no bound wire Frame")
         pending.attempts.append((carrier_id, generation))
+        pending.attempt_sent_at.append(time.monotonic() if sent_at is None else sent_at)
 
     def reinjection_frame(self, transmission_id: int) -> bytes:
         pending = self.pending.get(transmission_id)

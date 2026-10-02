@@ -48,6 +48,8 @@ def result_json(result) -> str:
             "transmission_id": result.transmission_id,
             "payload_utf8": result.payload.decode("utf-8", "replace"),
             "attempts": list(result.attempts),
+            "scheduler_initial_carrier": list(result.scheduler_initial_carrier),
+            "recovery_reason": result.recovery_reason,
             "failed_carrier_inactive": result.failed_carrier_inactive,
             "replacement_generation": result.replacement_generation,
             "replacement_first_record_sequence": result.replacement_first_record_sequence,
