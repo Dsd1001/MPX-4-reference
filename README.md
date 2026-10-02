@@ -4,7 +4,7 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
-**Reference version:** 0.8.0
+**Reference version:** 0.9.0
 
 **Language:** Python 3.11+
 
@@ -14,7 +14,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Version 0.8 implements:
+Version 0.9 implements:
 
 - canonical MPX VarInt;
 - Handshake Message and Parameter codec;
@@ -42,6 +42,10 @@ Version 0.8 implements:
 - graceful Carrier-close state distinct from raw transport loss;
 - Session active / closing / closed lifecycle with new Stream and JOIN blocking after SESSION_CLOSE;
 - bare TCP EOF and TCP half-close tests proving they are not MPX close Frames;
+- a unified Session engine owning Carriers, scheduler/reliability, flow control, Stream opening, terminal state, and graceful close;
+- simultaneous Streams 1 and 3 scheduled across two authenticated Carriers by the unified engine;
+- same-Transmission reinjection after a Carrier is marked lost, with a delayed original copy suppressed after reinjection delivery;
+- graceful FIN/CONSUMED retirement and STOP/RESET retirement coexisting in one Session engine run;
 - cross-Carrier reinjection and duplicate-delivery suppression;
 - timer-driven retry and immediate reinjection after Carrier loss;
 - AGGREGATE, PROTECT, AUTO, and WEIGHTED reference scheduler classes;
@@ -53,9 +57,10 @@ Version 0.8 implements:
 
 Still intentionally incomplete:
 
-- full bidirectional terminal-state integration for every existing endpoint;
+- automatic conversion of every Session-scoped protocol exception into an emitted SESSION_CLOSE;
+- dynamic Carrier replacement/JOIN orchestration inside the unified engine event loop;
+- full bidirectional terminal-state integration for every legacy standalone endpoint;
 - advanced tombstone compaction policies and compact range/bitmap representations;
-- automatic Session-close generation for every Session-scoped protocol error path;
 - continuously running background path probes;
 - production-grade congestion-control interaction;
 - a full end-to-end WEIGHTED CLI profile with per-direction capacity configuration;
@@ -87,6 +92,8 @@ src/mpx4/
 ├── probe_endpoint.py      Two-Carrier measured-path scheduler demo
 ├── multipath_endpoint.py  Cross-Carrier reinjection reference exchange
 ├── replacement_endpoint.py Carrier-loss and Generation replacement exchange
+├── session_engine.py      Unified Session orchestration and Frame dispatch
+├── session_engine_endpoint.py Integrated two-Stream/two-Carrier lifecycle
 ├── terminal.py            RESET/STOP, tombstone, and retired-identity state machine
 ├── terminal_endpoint.py   Real pre-open cancellation / retirement exchange
 ├── vectorcheck.py         Specification-vector verifier
@@ -105,6 +112,8 @@ tests/
 ├── test_replacement.py
 ├── test_scheduler.py
 ├── test_scheduler_handshake.py
+├── test_session_engine.py
+├── test_session_engine_endpoint.py
 ├── test_stream.py
 ├── test_terminal.py
 ├── test_terminal_endpoint.py
@@ -147,7 +156,7 @@ Expected result:
 MPX4_SPEC_DIR=../MPX-4 python -m unittest discover -s tests -v
 ```
 
-The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, two simultaneously active Streams, pre-open RESET/STOP cancellation, Client-side OPENING acceptance evidence, graceful Carrier/Session close, bare TCP EOF, and TCP half-close.
+The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, two simultaneously active Streams, pre-open RESET/STOP cancellation, Client-side OPENING acceptance evidence, graceful Carrier/Session close, bare TCP EOF, TCP half-close, and a unified two-Stream/two-Carrier Session lifecycle that combines scheduling, reinjection, duplicate suppression, terminal state, retirement, and Session close.
 
 ## Minimal PING/PONG endpoint
 
@@ -446,6 +455,58 @@ python -m mpx4 close-client \
 
 Available modes are `carrier`, `session`, `bare-eof`, and `half-close`.
 
+## Unified Session engine
+
+Version 0.9 adds `ReferenceSessionEngine`, an orchestration layer that owns the protocol state which earlier releases exercised through separate harnesses. The engine reuses the existing verified components rather than copying their logic:
+
+```text
+ReferenceSessionEngine
+  |
+  +-- authenticated Carrier set + Session lifecycle
+  +-- one Session-wide TransmissionLedger
+  +-- scheduler + ReliabilityLoop
+  +-- SendFlow + ReceiveFlow
+  +-- Client OPENING acceptance-evidence state
+  +-- Server terminal/tombstone state
+  +-- Client active terminal/retirement state
+  +-- CARRIER_CLOSE / SESSION_CLOSE controller
+  +-- central Frame dispatch
+```
+
+The integrated real-TCP scenario keeps Streams 1 and 3 active together across two authenticated Carriers. Stream 3 is first transmitted on Carrier 2; the Client then marks that Carrier lost and the same Transmission is immediately reinjected on Carrier 1. The Server deliberately processes the reinjection before the delayed original Carrier-2 copy. The delayed copy produces no second application delivery and no additional Session credit commitment.
+
+The same run then exercises two different terminal lifecycles concurrently:
+
+```text
+Stream 1: DATA <-> DATA -> FIN -> STREAM_CONSUMED -> retired
+Stream 3: DATA <-> DATA -> STOP_SENDING -> RESET_STREAM <-> RESET_STREAM -> retired
+Session : Carrier 2 lost -> Carrier 1 survives -> SESSION_CLOSE
+```
+
+The Client uses one monotonically increasing Transmission-ID namespace across both Streams. In the reference scenario the Client sequence is `OPEN 1/2`, `DATA 3/4`, `FIN 5`, `STREAM_CONSUMED 6`, `RESET 7`; reinjection of DATA 4 keeps Transmission ID 4 rather than allocating a new one.
+
+Run the integrated scenario:
+
+```bash
+python -m mpx4 unified-server \
+  --listen 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --expect1 alpha \
+  --expect3 beta \
+  --reply1 reply-alpha \
+  --reply3 reply-beta
+
+python -m mpx4 unified-client \
+  --connect 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --send1 alpha \
+  --send3 beta \
+  --expect-reply1 reply-alpha \
+  --expect-reply3 reply-beta
+```
+
+This remains a readable reference transport, not a production event loop: socket readiness, timers, application I/O, and dynamic JOIN/replacement policy are intentionally kept explicit.
+
 ## JOIN rejection behavior
 
 Draft 03 defines JOIN validation failures such as `SESSION_CONFLICT`, `SCHEDULER_MISMATCH`, and `CARRIER_CONFLICT`, but does not define a dedicated pre-authentication handshake-error response message.
@@ -458,7 +519,7 @@ GitHub Actions checks out the current `Dsd1001/MPX-4` specification and runs:
 
 1. unit tests;
 2. real localhost TCP endpoint tests;
-3. Stream, multi-Stream, opening-reordering, terminal-state, close, JOIN, reinjection, replacement, and path-measurement tests;
+3. Stream, unified-Session, multi-Stream, opening-reordering, terminal-state, close, JOIN, reinjection, replacement, and path-measurement tests;
 4. all implemented specification vectors.
 
 A scheduled run also checks whether newer specification changes have broken the reference implementation.

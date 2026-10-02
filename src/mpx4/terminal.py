@@ -401,6 +401,12 @@ class ServerTerminalStateMachine:
         state.local_terminal_acked = False
         return wire
 
+    def start_local_reset(self, stream_id: int, error_code: int) -> bytes:
+        state = self.active.get(stream_id)
+        if state is None:
+            raise StreamStateError("cannot RESET unknown Stream")
+        return self._active_reset_wire(state, error_code)
+
     def _tombstone_reset_wire(
         self,
         tombstone: StreamTombstone,

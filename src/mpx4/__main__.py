@@ -11,6 +11,7 @@ from .multistream_endpoint import run_multistream_client, run_multistream_server
 from .opening_endpoint import run_opening_client, run_opening_server
 from .probe_endpoint import run_probe_client, run_probe_server
 from .replacement_endpoint import run_replacement_client, run_replacement_server
+from .session_engine_endpoint import run_unified_client, run_unified_server
 from .stream_endpoint import run_stream_client, run_stream_server
 from .terminal_endpoint import run_terminal_client, run_terminal_server
 from .vectorcheck import verify_all
@@ -39,7 +40,26 @@ def split_address(value: str) -> tuple[str, int]:
 
 
 def result_json(result) -> str:
-    if hasattr(result, "phase_before_open_ok"):
+    if hasattr(result, "reinjection_attempts") and hasattr(result, "side"):
+        payload = {
+            "session_id": result.session_id.hex(),
+            "side": result.side,
+            "stream_ids": list(result.stream_ids),
+            "received_stream1_utf8": result.received_stream1.decode("utf-8", "replace"),
+            "received_stream3_utf8": result.received_stream3.decode("utf-8", "replace"),
+            "stream1_deliveries": result.stream1_deliveries,
+            "stream3_deliveries": result.stream3_deliveries,
+            "reinjected_transmission_id": result.reinjected_transmission_id,
+            "reinjection_attempts": [list(value) for value in result.reinjection_attempts],
+            "late_original_suppressed": result.late_original_suppressed,
+            "carrier2_lost": result.carrier2_lost,
+            "retired_stream_ids": list(result.retired_stream_ids),
+            "server_tombstones": list(result.server_tombstones),
+            "session_closed": result.session_closed,
+            "close_records_sent": result.close_records_sent,
+            "max_transmission_id": result.max_transmission_id,
+        }
+    elif hasattr(result, "phase_before_open_ok"):
         payload = {
             "session_id": result.session_id.hex(),
             "mode": result.mode,
@@ -327,6 +347,28 @@ def main() -> None:
         required=True,
     )
 
+    unified_server = sub.add_parser(
+        "unified-server",
+        help="run the integrated two-Stream/two-Carrier Session engine scenario",
+    )
+    unified_server.add_argument("--listen", default="127.0.0.1:24004")
+    unified_server.add_argument("--key", required=True, type=parse_key)
+    unified_server.add_argument("--expect1", required=True)
+    unified_server.add_argument("--expect3", required=True)
+    unified_server.add_argument("--reply1", required=True)
+    unified_server.add_argument("--reply3", required=True)
+
+    unified_client = sub.add_parser(
+        "unified-client",
+        help="run the integrated Session engine Client scenario",
+    )
+    unified_client.add_argument("--connect", default="127.0.0.1:24004")
+    unified_client.add_argument("--key", required=True, type=parse_key)
+    unified_client.add_argument("--send1", required=True)
+    unified_client.add_argument("--send3", required=True)
+    unified_client.add_argument("--expect-reply1", required=True)
+    unified_client.add_argument("--expect-reply3", required=True)
+
     args = parser.parse_args()
 
     if args.command == "vectors":
@@ -554,6 +596,44 @@ def main() -> None:
     if args.command == "close-client":
         host, port = split_address(args.connect)
         print(result_json(run_close_client(host, port, args.key, mode=args.mode)))
+        return
+
+    if args.command == "unified-server":
+        host, port = split_address(args.listen)
+        print(
+            json.dumps({"listening": args.listen, "mode": "unified-session"}),
+            flush=True,
+        )
+        print(
+            result_json(
+                run_unified_server(
+                    host,
+                    port,
+                    args.key,
+                    expect1=args.expect1.encode(),
+                    expect3=args.expect3.encode(),
+                    reply1=args.reply1.encode(),
+                    reply3=args.reply3.encode(),
+                )
+            )
+        )
+        return
+
+    if args.command == "unified-client":
+        host, port = split_address(args.connect)
+        print(
+            result_json(
+                run_unified_client(
+                    host,
+                    port,
+                    args.key,
+                    send1=args.send1.encode(),
+                    send3=args.send3.encode(),
+                    expect_reply1=args.expect_reply1.encode(),
+                    expect_reply3=args.expect_reply3.encode(),
+                )
+            )
+        )
         return
 
 

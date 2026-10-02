@@ -1,6 +1,6 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.8
+**Reference version:** 0.9
 
 **Protocol target:** MPX/4 Draft 03
 
@@ -122,7 +122,7 @@ Draft 03 defines JOIN rejection error classes but no dedicated pre-authenticatio
 | Non-zero FIN/RESET acceptance evidence rejected | Implemented |
 | Complete initiator OPENING acceptance-evidence state machine | Implemented |
 
-The two-Stream reference endpoint currently uses one Carrier. Multipath scheduling across many simultaneous Streams is a later integration step.
+The legacy two-Stream endpoint still uses one Carrier, but Version 0.9 adds a unified Session engine and a real two-Carrier/two-Stream integration scenario that schedules both Streams across one Session-wide reliability and flow-control state.
 
 ## Reliability and reinjection
 
@@ -141,6 +141,9 @@ The two-Stream reference endpoint currently uses one Carrier. Multipath scheduli
 | Duplicate ACK settlement | Implemented |
 | Never-allocated ACK rejection | Implemented |
 | Multi-Attempt ACK excluded from path-rate attribution | Implemented |
+| Unified engine uses one ledger across multiple Streams/Carriers | Implemented |
+| Unified engine loss-triggered reinjection | Implemented |
+| Unified engine delayed-original duplicate suppression | Implemented |
 
 ## Path measurement and schedulers
 
@@ -189,6 +192,13 @@ Reference scheduler algorithms are local implementation choices. Draft 03 standa
 | Real SESSION_CLOSE on two Carriers | Implemented |
 | Real bare TCP EOF classified as Carrier loss | Implemented |
 | Real TCP half-close classified as Carrier loss | Implemented |
+| Unified two-Stream/two-Carrier Session engine | Implemented |
+| Unified Session-wide Transmission-ID namespace | Implemented |
+| Unified Stream 3 loss/reinjection with same Transmission ID | Implemented |
+| Unified delayed original after reinjection | Implemented |
+| Unified Stream 1 FIN/CONSUMED retirement | Implemented |
+| Unified Stream 3 STOP/RESET retirement | Implemented |
+| Unified Session close after Carrier loss | Implemented |
 | End-to-end WEIGHTED traffic-placement CLI | Not yet implemented |
 
 ## Specification vectors
@@ -204,7 +214,7 @@ Reference scheduler algorithms are local implementation choices. Draft 03 standa
 
 ## Interoperability profile
 
-Version 0.8 adds initiator-side opening reordering and authenticated close behavior to the existing path, Stream, reliability, and retirement exercises:
+Version 0.9 adds a single orchestration layer that combines the previously independent path, Stream, reliability, terminal, and close exercises:
 
 ```text
 Path measurement:
@@ -241,8 +251,21 @@ Close behavior:
   CARRIER_CLOSE -> target Carrier closed, Session survives
   bare EOF / half-close -> Carrier loss, not graceful MPX close
   SESSION_CLOSE -> Session closed, new Stream/JOIN blocked
+
+Unified Session engine:
+  Session
+    +-- Carrier 1 -- Stream 1 DATA ----------------------------+
+    +-- Carrier 2 -- Stream 3 DATA -- loss                    |
+    |                     |                                   |
+    |                     +-> same TxID reinjected Carrier 1 -+
+    |                                                         |
+    +-- late original Carrier 2 -> ACK only, no 2nd delivery  |
+    |                                                         |
+    +-- Stream 1 FIN / CONSUMED -> retired                    |
+    +-- Stream 3 STOP / RESET   -> retired                    |
+    +-- surviving Carrier 1 -> SESSION_CLOSE -----------------+
 ```
 
 The reference still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
 
-The next major milestones are full bidirectional RESET/STOP integration across the existing Stream endpoints, automatic SESSION_CLOSE generation for Session-scoped protocol errors, stronger state-validity vector coverage, and then a combined multi-Stream + multi-Carrier adaptive scheduling exercise.
+The next major milestones are automatic SESSION_CLOSE generation for Session-scoped protocol errors, dynamic higher-Generation replacement/JOIN inside the unified engine loop, stronger state-validity vector coverage, continuous background path probes, and end-to-end WEIGHTED traffic placement.
