@@ -4,7 +4,7 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
-**Reference version:** 0.7.0
+**Reference version:** 0.8.0
 
 **Language:** Python 3.11+
 
@@ -14,7 +14,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Version 0.7 implements:
+Version 0.8 implements:
 
 - canonical MPX VarInt;
 - Handshake Message and Parameter codec;
@@ -36,6 +36,12 @@ Version 0.7 implements:
 - lightweight cancellation tombstones and retained terminal tombstones;
 - compacted retired Stream identities that never recreate application state;
 - idempotent duplicate terminal handling and final-size conflict detection;
+- Client OPENING acceptance evidence for STREAM_CREDIT, FIN(0), RESET(0), and STOP_SENDING;
+- rejection of STREAM_DATA before STREAM_OPEN_OK and of OPEN_REJECT after acceptance evidence;
+- authenticated CARRIER_CLOSE and SESSION_CLOSE encoding/decoding;
+- graceful Carrier-close state distinct from raw transport loss;
+- Session active / closing / closed lifecycle with new Stream and JOIN blocking after SESSION_CLOSE;
+- bare TCP EOF and TCP half-close tests proving they are not MPX close Frames;
 - cross-Carrier reinjection and duplicate-delivery suppression;
 - timer-driven retry and immediate reinjection after Carrier loss;
 - AGGREGATE, PROTECT, AUTO, and WEIGHTED reference scheduler classes;
@@ -47,10 +53,9 @@ Version 0.7 implements:
 
 Still intentionally incomplete:
 
-- a complete initiator-side OPENING acceptance-evidence state machine;
 - full bidirectional terminal-state integration for every existing endpoint;
 - advanced tombstone compaction policies and compact range/bitmap representations;
-- CARRIER_CLOSE / SESSION_CLOSE endpoint behavior;
+- automatic Session-close generation for every Session-scoped protocol error path;
 - continuously running background path probes;
 - production-grade congestion-control interaction;
 - a full end-to-end WEIGHTED CLI profile with per-direction capacity configuration;
@@ -69,6 +74,10 @@ src/mpx4/
 ├── tcp.py                 Incremental TCP binding parser
 ├── endpoint.py            Minimal CREATE + PING/PONG endpoint
 ├── carrier.py             CREATE/JOIN Carrier lifecycle and Session state
+├── close.py               Carrier/Session graceful-close state
+├── close_endpoint.py      Real close-vs-transport-loss scenarios
+├── opening.py             Client OPENING acceptance-evidence state
+├── opening_endpoint.py    Cross-Carrier OPENING reordering scenarios
 ├── stream.py              Reassembly, credit, Stream registry, and Tx state
 ├── stream_endpoint.py     Single-Stream bidirectional exchange
 ├── multistream_endpoint.py Two simultaneous Stream lifecycles
@@ -84,11 +93,15 @@ src/mpx4/
 └── __main__.py            Command-line interface
 
 tests/
+├── test_close.py
+├── test_close_endpoint.py
 ├── test_core.py
 ├── test_endpoint.py
 ├── test_measurement.py
 ├── test_multistream.py
 ├── test_multipath.py
+├── test_opening.py
+├── test_opening_endpoint.py
 ├── test_replacement.py
 ├── test_scheduler.py
 ├── test_scheduler_handshake.py
@@ -134,7 +147,7 @@ Expected result:
 MPX4_SPEC_DIR=../MPX-4 python -m unittest discover -s tests -v
 ```
 
-The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, two simultaneously active Streams, and pre-open RESET/STOP cancellation followed by tombstone retirement.
+The suite includes real localhost TCP tests for CREATE, JOIN, two-Carrier reinjection, Generation replacement, encrypted path probes, single-Stream operation, two simultaneously active Streams, pre-open RESET/STOP cancellation, Client-side OPENING acceptance evidence, graceful Carrier/Session close, bare TCP EOF, and TCP half-close.
 
 ## Minimal PING/PONG endpoint
 
@@ -376,6 +389,63 @@ python -m mpx4 terminal-client \
 
 Use `--mode stop` to exercise STOP_SENDING before STREAM_OPEN.
 
+## Client OPENING acceptance evidence
+
+Version 0.8 implements the initiator-side reordering rules from `STATE-MACHINES.md`. Once the Server has accepted a Stream, a Frame emitted on a second Carrier can overtake `STREAM_OPEN_OK` on the first Carrier.
+
+The reference accepts exactly the Draft 03 evidence set while the Stream is still OPENING:
+
+```text
+STREAM_CREDIT
+STREAM_FIN   Final Offset 0
+RESET_STREAM Final Offset 0
+STOP_SENDING
+```
+
+The Client remains logically OPENING, but records acceptance evidence and applies the normal semantics of the received Frame. A later `STREAM_OPEN_OK` completes opening. `STREAM_DATA` before OPEN_OK is still `STREAM_STATE_ERROR`, and `STREAM_OPEN_REJECT` after acceptance evidence is also `STREAM_STATE_ERROR`.
+
+The real two-Carrier harness intentionally sends evidence on Carrier 2 before OPEN_OK on Carrier 1:
+
+```bash
+python -m mpx4 opening-server \
+  --listen 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode credit
+
+python -m mpx4 opening-client \
+  --connect 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode credit
+```
+
+Available modes are `credit`, `fin`, `reset`, and `stop`. In `stop` mode the Client acknowledges STOP_SENDING and creates a reliable `RESET_STREAM` with Final Offset 0 before OPEN_OK arrives; the Server acknowledges that RESET before completing the opening exchange.
+
+## Carrier and Session close behavior
+
+Version 0.8 also distinguishes authenticated MPX close from underlying TCP termination.
+
+`CARRIER_CLOSE` applies only to the Carrier carrying it. The reference marks that Carrier gracefully closed, prohibits further Secure Records on it, and leaves the Session plus other Carriers usable. The close harness proves this by completing PING/PONG over the surviving Carrier.
+
+`SESSION_CLOSE` moves the Session through closing to closed, marks all known Carriers unusable, and prevents both new Streams and new Carrier JOINs. Repeated SESSION_CLOSE handling is idempotent.
+
+By contrast, a bare TCP EOF or `shutdown(SHUT_WR)` without an authenticated MPX close Frame is classified as Carrier transport loss, not graceful closure. The other Carrier remains usable.
+
+Run the four close scenarios with:
+
+```bash
+python -m mpx4 close-server \
+  --listen 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode carrier
+
+python -m mpx4 close-client \
+  --connect 127.0.0.1:24004 \
+  --key <32-byte-key> \
+  --mode carrier
+```
+
+Available modes are `carrier`, `session`, `bare-eof`, and `half-close`.
+
 ## JOIN rejection behavior
 
 Draft 03 defines JOIN validation failures such as `SESSION_CONFLICT`, `SCHEDULER_MISMATCH`, and `CARRIER_CONFLICT`, but does not define a dedicated pre-authentication handshake-error response message.
@@ -388,7 +458,7 @@ GitHub Actions checks out the current `Dsd1001/MPX-4` specification and runs:
 
 1. unit tests;
 2. real localhost TCP endpoint tests;
-3. Stream, multi-Stream, terminal-state, JOIN, reinjection, replacement, and path-measurement tests;
+3. Stream, multi-Stream, opening-reordering, terminal-state, close, JOIN, reinjection, replacement, and path-measurement tests;
 4. all implemented specification vectors.
 
 A scheduled run also checks whether newer specification changes have broken the reference implementation.

@@ -4,9 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
+from .close_endpoint import run_close_client, run_close_server
 from .endpoint import run_client, run_server
 from .multipath_endpoint import run_multipath_client, run_multipath_server
 from .multistream_endpoint import run_multistream_client, run_multistream_server
+from .opening_endpoint import run_opening_client, run_opening_server
 from .probe_endpoint import run_probe_client, run_probe_server
 from .replacement_endpoint import run_replacement_client, run_replacement_server
 from .stream_endpoint import run_stream_client, run_stream_server
@@ -37,7 +39,37 @@ def split_address(value: str) -> tuple[str, int]:
 
 
 def result_json(result) -> str:
-    if hasattr(result, "stale_data_ignored"):
+    if hasattr(result, "phase_before_open_ok"):
+        payload = {
+            "session_id": result.session_id.hex(),
+            "mode": result.mode,
+            "stream_id": result.stream_id,
+            "phase_before_open_ok": result.phase_before_open_ok,
+            "final_phase": result.final_phase,
+            "acceptance_evidence": result.acceptance_evidence,
+            "open_settled": result.open_settled,
+            "evidence_acked": result.evidence_acked,
+            "client_reset_sent": result.client_reset_sent,
+            "client_reset_acked": result.client_reset_acked,
+            "peer_terminal_kind": result.peer_terminal_kind,
+            "stream_credit_maximum": result.stream_credit_maximum,
+        }
+    elif hasattr(result, "carrier2_graceful"):
+        payload = {
+            "session_id": result.session_id.hex(),
+            "mode": result.mode,
+            "session_lifecycle": result.session_lifecycle,
+            "carrier1_active": result.carrier1_active,
+            "carrier2_active": result.carrier2_active,
+            "carrier2_graceful": result.carrier2_graceful,
+            "carrier2_close_kind": result.carrier2_close_kind,
+            "surviving_ping": result.surviving_ping,
+            "transport_loss_detected": result.transport_loss_detected,
+            "new_stream_blocked": result.new_stream_blocked,
+            "new_join_blocked": result.new_join_blocked,
+            "close_records_sent": result.close_records_sent,
+        }
+    elif hasattr(result, "stale_data_ignored"):
         payload = {
             "session_id": result.session_id.hex(),
             "mode": result.mode,
@@ -247,6 +279,54 @@ def main() -> None:
     terminal_client.add_argument("--key", required=True, type=parse_key)
     terminal_client.add_argument("--mode", choices=["reset", "stop"], required=True)
 
+    opening_server = sub.add_parser(
+        "opening-server",
+        help="send acceptance evidence before STREAM_OPEN_OK on another Carrier",
+    )
+    opening_server.add_argument("--listen", default="127.0.0.1:24004")
+    opening_server.add_argument("--key", required=True, type=parse_key)
+    opening_server.add_argument(
+        "--mode",
+        choices=["credit", "fin", "reset", "stop"],
+        required=True,
+    )
+
+    opening_client = sub.add_parser(
+        "opening-client",
+        help="exercise Client OPENING acceptance-evidence handling",
+    )
+    opening_client.add_argument("--connect", default="127.0.0.1:24004")
+    opening_client.add_argument("--key", required=True, type=parse_key)
+    opening_client.add_argument(
+        "--mode",
+        choices=["credit", "fin", "reset", "stop"],
+        required=True,
+    )
+
+    close_server = sub.add_parser(
+        "close-server",
+        help="exercise Carrier/Session close and raw TCP termination behavior",
+    )
+    close_server.add_argument("--listen", default="127.0.0.1:24004")
+    close_server.add_argument("--key", required=True, type=parse_key)
+    close_server.add_argument(
+        "--mode",
+        choices=["carrier", "session", "bare-eof", "half-close"],
+        required=True,
+    )
+
+    close_client = sub.add_parser(
+        "close-client",
+        help="observe authenticated MPX close versus TCP transport loss",
+    )
+    close_client.add_argument("--connect", default="127.0.0.1:24004")
+    close_client.add_argument("--key", required=True, type=parse_key)
+    close_client.add_argument(
+        "--mode",
+        choices=["carrier", "session", "bare-eof", "half-close"],
+        required=True,
+    )
+
     args = parser.parse_args()
 
     if args.command == "vectors":
@@ -446,6 +526,34 @@ def main() -> None:
                 )
             )
         )
+        return
+
+    if args.command == "opening-server":
+        host, port = split_address(args.listen)
+        print(
+            json.dumps({"listening": args.listen, "mode": f"opening-{args.mode}"}),
+            flush=True,
+        )
+        print(result_json(run_opening_server(host, port, args.key, mode=args.mode)))
+        return
+
+    if args.command == "opening-client":
+        host, port = split_address(args.connect)
+        print(result_json(run_opening_client(host, port, args.key, mode=args.mode)))
+        return
+
+    if args.command == "close-server":
+        host, port = split_address(args.listen)
+        print(
+            json.dumps({"listening": args.listen, "mode": f"close-{args.mode}"}),
+            flush=True,
+        )
+        print(result_json(run_close_server(host, port, args.key, mode=args.mode)))
+        return
+
+    if args.command == "close-client":
+        host, port = split_address(args.connect)
+        print(result_json(run_close_client(host, port, args.key, mode=args.mode)))
         return
 
 

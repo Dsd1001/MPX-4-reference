@@ -42,9 +42,33 @@ class SecureCarrier:
     local_limits: EndpointLimits
     peer_limits: EndpointLimits
     active: bool = True
+    close_kind: str | None = None
+    close_error_code: int | None = None
+    close_trigger_frame_type: int = 0
+    close_reason: str = ""
+
+    @property
+    def gracefully_closed(self) -> bool:
+        return self.close_kind is not None
 
     def mark_lost(self) -> None:
         self.active = False
+
+    def mark_graceful_close(
+        self,
+        kind: str,
+        *,
+        error_code: int,
+        trigger_frame_type: int,
+        reason: str,
+    ) -> None:
+        if kind not in {"carrier", "session"}:
+            raise ValueError("invalid graceful close kind")
+        self.active = False
+        self.close_kind = kind
+        self.close_error_code = error_code
+        self.close_trigger_frame_type = trigger_frame_type
+        self.close_reason = reason
 
     def send(self, *frames: bytes) -> None:
         if not self.active:
@@ -81,8 +105,22 @@ class ClientSessionState:
     server_limits: EndpointLimits
     scheduler: int
     generations: dict[int, int] = field(default_factory=dict)
+    lifecycle: str = "active"
+
+    def ensure_stream_creation_allowed(self) -> None:
+        if self.lifecycle != "active":
+            raise SessionConflictError("Session is closing or closed")
+
+    def begin_close(self) -> None:
+        if self.lifecycle == "active":
+            self.lifecycle = "closing"
+
+    def finish_close(self) -> None:
+        self.lifecycle = "closed"
 
     def validate_local_join(self, carrier_id: int, generation: int) -> None:
+        if self.lifecycle != "active":
+            raise SessionConflictError("cannot JOIN a closing or closed Session")
         current = self.generations.get(carrier_id)
         if current is None:
             if generation != 0:
@@ -106,6 +144,18 @@ class ServerSessionState:
     server_limits: EndpointLimits
     scheduler: int
     generations: dict[int, int] = field(default_factory=dict)
+    lifecycle: str = "active"
+
+    def ensure_stream_creation_allowed(self) -> None:
+        if self.lifecycle != "active":
+            raise SessionConflictError("Session is closing or closed")
+
+    def begin_close(self) -> None:
+        if self.lifecycle == "active":
+            self.lifecycle = "closing"
+
+    def finish_close(self) -> None:
+        self.lifecycle = "closed"
 
     @classmethod
     def from_create(
@@ -127,6 +177,8 @@ class ServerSessionState:
         return state
 
     def validate_join(self, init: ClientInitParameters) -> None:
+        if self.lifecycle != "active":
+            raise SessionConflictError("cannot JOIN a closing or closed Session")
         if init.action != int(SessionAction.JOIN):
             raise SessionConflictError("additional Carrier must use JOIN")
         if init.session_id != self.session_id:

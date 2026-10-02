@@ -90,6 +90,13 @@ class StopSending:
     error_code: int
 
 
+@dataclass(frozen=True)
+class CloseFrame:
+    error_code: int
+    trigger_frame_type: int
+    reason: str
+
+
 def encode_parameter(parameter: Parameter) -> bytes:
     if parameter.flags & 0xFE:
         raise ValueError("reserved Parameter flag bits must be zero")
@@ -213,6 +220,48 @@ def _decode_exact_varints(body: bytes, count: int) -> tuple[int, ...]:
 def _expect_frame(frame: Frame, expected: FrameType) -> None:
     if frame.type != int(expected):
         raise DecodeError(f"expected {expected.name}")
+
+
+def encode_close(
+    frame_type: FrameType,
+    error_code: int,
+    trigger_frame_type: int,
+    reason: str = "",
+) -> bytes:
+    if frame_type not in (FrameType.CARRIER_CLOSE, FrameType.SESSION_CLOSE):
+        raise ValueError("close Frame type must be CARRIER_CLOSE or SESSION_CLOSE")
+    reason_bytes = reason.encode("utf-8")
+    if len(reason_bytes) > 256:
+        raise ValueError("close Reason exceeds 256 UTF-8 octets")
+    return encode_frame(
+        frame_type,
+        encode_varint(error_code)
+        + encode_varint(trigger_frame_type)
+        + encode_varint(len(reason_bytes))
+        + reason_bytes,
+    )
+
+
+def decode_close(frame: Frame) -> CloseFrame:
+    if frame.type not in (
+        int(FrameType.CARRIER_CLOSE),
+        int(FrameType.SESSION_CLOSE),
+    ):
+        raise DecodeError("Frame is not CARRIER_CLOSE/SESSION_CLOSE")
+    offset = 0
+    error_code, offset = decode_varint(frame.body, offset)
+    trigger_frame_type, offset = decode_varint(frame.body, offset)
+    reason_length, offset = decode_varint(frame.body, offset)
+    if reason_length > 256:
+        raise DecodeError("close Reason exceeds 256 octets")
+    end = offset + reason_length
+    if end != len(frame.body):
+        raise DecodeError("invalid close Reason Length")
+    try:
+        reason = bytes(frame.body[offset:end]).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DecodeError("close Reason is not valid UTF-8") from exc
+    return CloseFrame(error_code, trigger_frame_type, reason)
 
 
 def encode_ping(token: int) -> bytes:
