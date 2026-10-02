@@ -115,9 +115,11 @@ def _client_with_carriers(
     _recv_handle(engine, carrier1)
     engine.advertise_session_credit(carrier=carrier1)
 
+    # Make both OPEN placements deterministic without relying on any
+    # platform-dependent RTT/queue estimates.
+    engine.set_carrier_role((2, 0), "disabled")
     stream1, open1 = engine.open_stream()
-    # Make the cross-Carrier OPEN placement deterministic without relying on
-    # timing-sensitive RTT/queue estimates from the first OPEN acknowledgement.
+    engine.set_carrier_role((2, 0), "active")
     engine.set_carrier_role((1, 0), "disabled")
     stream3, open3 = engine.open_stream()
     engine.set_carrier_role((1, 0), "active")
@@ -141,9 +143,11 @@ def _client_with_carriers(
     engine.advertise_stream_credit(stream1, carrier=carrier1)
     engine.advertise_stream_credit(stream3, carrier=carrier1)
 
+    # Force each new DATA Transmission through the scheduler's normal
+    # active-role filter so Linux/macOS timing cannot change this scenario.
+    engine.set_carrier_role((2, 0), "disabled")
     attempt1 = engine.send_data(stream1, payload1)
-    # Force the second new Transmission onto Carrier 2 through the scheduler's
-    # normal active-role filter, then restore Carrier 1 before reinjection.
+    engine.set_carrier_role((2, 0), "active")
     engine.set_carrier_role((1, 0), "disabled")
     attempt3 = engine.send_data(stream3, payload3)
     engine.set_carrier_role((1, 0), "active")
