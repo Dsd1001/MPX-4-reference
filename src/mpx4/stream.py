@@ -173,6 +173,8 @@ class ReceiveStream:
 class PendingTransmission:
     stream_id: int
     kind: str
+    wire_frame: bytes | None = None
+    attempts: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -186,6 +188,38 @@ class TransmissionLedger:
         self.next_id += 1
         self.pending[transmission_id] = PendingTransmission(stream_id, kind)
         return transmission_id
+
+    def bind_frame(self, transmission_id: int, wire_frame: bytes) -> None:
+        pending = self.pending.get(transmission_id)
+        if pending is None:
+            raise TransmissionIDError("cannot bind a settled or unknown Transmission")
+        if pending.wire_frame is not None and pending.wire_frame != wire_frame:
+            raise TransmissionIDError("Transmission semantics changed after allocation")
+        pending.wire_frame = bytes(wire_frame)
+
+    def note_attempt(
+        self,
+        transmission_id: int,
+        carrier_id: int,
+        generation: int,
+    ) -> None:
+        pending = self.pending.get(transmission_id)
+        if pending is None:
+            raise TransmissionIDError("cannot attempt a settled or unknown Transmission")
+        if pending.wire_frame is None:
+            raise TransmissionIDError("Transmission has no bound wire Frame")
+        pending.attempts.append((carrier_id, generation))
+
+    def reinjection_frame(self, transmission_id: int) -> bytes:
+        pending = self.pending.get(transmission_id)
+        if pending is None:
+            raise TransmissionIDError("Transmission is no longer outstanding")
+        if pending.wire_frame is None:
+            raise TransmissionIDError("Transmission has no bound wire Frame")
+        return pending.wire_frame
+
+    def outstanding_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self.pending))
 
     def settle(self, stream_id: int, transmission_id: int) -> None:
         if transmission_id in self.settled:

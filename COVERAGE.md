@@ -1,6 +1,6 @@
 # MPX/4 Reference Coverage
 
-**Reference version:** 0.3
+**Reference version:** 0.4
 
 **Protocol target:** MPX/4 Draft 03
 
@@ -36,11 +36,14 @@ This file distinguishes implemented reference behavior from protocol areas that 
 | Fresh traffic keys per Carrier | Implemented |
 | Independent Record sequence spaces | Implemented |
 | New Carrier ID starts at Generation 0 | Implemented |
-| Higher Generation supersedes lower Generation | State validation implemented |
+| Higher Generation supersedes lower Generation | Implemented |
 | Equal/stale Generation rejection | Implemented |
 | Session-scoped JOIN receive-limit validation | Implemented |
 | Carrier-scoped MAX_RECORD_SIZE variation | Implemented |
-| Full replacement TCP lifecycle | Not yet implemented |
+| Unexpected TCP loss marks Carrier inactive | Implemented |
+| Same-ID Generation replacement after loss | Implemented |
+| Replacement fresh key / IV state | Implemented |
+| Replacement Record sequence restarts at 0 | Implemented |
 | CARRIER_CLOSE / SESSION_CLOSE endpoint behavior | Not yet implemented |
 
 Draft 03 defines JOIN rejection error classes but no dedicated handshake-error wire message. The reference therefore rejects invalid JOINs by terminating the incomplete Carrier handshake and does not invent an extension message.
@@ -65,9 +68,12 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 | Session-wide local Transmission ledger | Implemented |
 | Same Transmission ID across Carrier Attempts | Implemented |
 | Cross-Carrier reinjection | Implemented for one deterministic DATA Transmission |
+| Pending wire Frame retained across Carrier loss | Implemented |
+| Automatic reinjection after replacement | Implemented |
+| Attempt history records Carrier ID / Generation | Implemented |
 | Duplicate application suppression | Implemented |
 | Reinjection consumes no additional logical credit | Implemented |
-| Automatic retransmission timer | Not yet implemented |
+| Timer-driven retransmission | Not yet implemented |
 | RESET / STOP_SENDING state engine | Partial codec only |
 | Tombstones / retired identities | Not yet implemented |
 | Multiple simultaneous Streams | Not yet implemented |
@@ -80,6 +86,8 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 | AGGREGATE handshake identifier | Implemented |
 | Two active Carriers | Implemented |
 | Cross-Carrier arrival-order test | Implemented |
+| Surviving Carrier remains usable through peer Carrier loss | Implemented |
+| Carrier replacement Gen 0 -> Gen 1 | Implemented |
 | AUTO scheduler | Not yet implemented |
 | AGGREGATE scheduler policy engine | Not yet implemented |
 | PROTECT scheduler | Not yet implemented |
@@ -99,33 +107,35 @@ Draft 03 defines JOIN rejection error classes but no dedicated handshake-error w
 
 ## Interoperability profile
 
-Version 0.3 exercises an actual two-Carrier MPX/4 Session:
+Version 0.4 extends the two-Carrier Session with unexpected transport loss and replacement:
 
 ```text
-Carrier 1
-  CREATE
-    |
-    +---- Session state ----+
-                           |
-Carrier 2                  |
-  JOIN --------------------+
-    |
-    +-- fresh key / IV
-    +-- Record sequence = 0
+Carrier 1 / Gen 0
+  remains active throughout
 
-Stream 1:
-  STREAM_OPEN / credit on Carrier 1
+Carrier 2 / Gen 0
+  Attempt N sent
+  no TRANSMISSION_ACK
+       |
+       X unexpected TCP loss
+       |
+Session keeps Stream, credit, and Transmission N
+       |
+Carrier 2 / Gen 1
+  fresh JOIN
+  fresh traffic keys
+  Record sequence = 0
+       |
+ledger reinjects the original wire Frame
+       |
+TRANSMISSION_ACK N
 
-Transmission N:
-  Attempt 1 -> Carrier 1
-  Attempt 2 -> Carrier 2   (same Transmission ID and bytes)
-
-Server intentionally reads Carrier 2 first
+Result:
   -> application delivery exactly once
   -> Session commitment counted exactly once
-  -> ACK may return on either Carrier
+  -> Attempt history = (2,0), (2,1)
 ```
 
 It still does **not** claim the full Mandatory profile in `MPX-4/INTEROPERABILITY.md`.
 
-The next major milestone is an actual Carrier replacement after transport loss using a higher Generation, followed by automatic retransmission/reinjection of an outstanding Transmission.
+The next major milestone is timer-driven retransmission plus a small scheduler policy layer that chooses among multiple active Carriers instead of using deterministic test placement.

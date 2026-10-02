@@ -18,6 +18,7 @@ from .endpoint import (
 from .errors import (
     AuthenticationError,
     CarrierConflictError,
+    CarrierLostError,
     DecodeError,
     SchedulerMismatchError,
     SessionConflictError,
@@ -40,20 +41,36 @@ class SecureCarrier:
     receiver: RecordCipher
     local_limits: EndpointLimits
     peer_limits: EndpointLimits
+    active: bool = True
+
+    def mark_lost(self) -> None:
+        self.active = False
 
     def send(self, *frames: bytes) -> None:
+        if not self.active:
+            raise CarrierLostError("Carrier is inactive")
         plaintext = b"".join(frames)
         if not plaintext:
             raise ValueError("Secure Record must contain at least one Frame")
         if len(plaintext) > self.peer_limits.max_record_size:
             raise ValueError("Secure Record exceeds peer MAX_RECORD_SIZE")
-        self.sock.sendall(self.sender.seal(plaintext))
+        try:
+            self.sock.sendall(self.sender.seal(plaintext))
+        except OSError as exc:
+            self.mark_lost()
+            raise CarrierLostError("Carrier transport write failed") from exc
 
     def recv(self):
-        record = recv_wire_record(
-            self.sock,
-            max_record_size=self.local_limits.max_record_size,
-        )
+        if not self.active:
+            raise CarrierLostError("Carrier is inactive")
+        try:
+            record = recv_wire_record(
+                self.sock,
+                max_record_size=self.local_limits.max_record_size,
+            )
+        except (EOFError, OSError) as exc:
+            self.mark_lost()
+            raise CarrierLostError("Carrier transport read failed") from exc
         return decode_frames(self.receiver.open(record))
 
 

@@ -4,7 +4,7 @@ A small, independent reference implementation and interoperability harness for t
 
 **Target protocol:** MPX/4 Draft 03
 
-**Reference version:** 0.3.0
+**Reference version:** 0.4.0
 
 **Language:** Python 3.11+
 
@@ -14,7 +14,7 @@ This repository is intentionally separate from production MPX implementations. T
 
 ## Current coverage
 
-Version 0.3 implements:
+Version 0.4 implements:
 
 - canonical MPX VarInt;
 - Handshake Message and Parameter codec;
@@ -29,14 +29,17 @@ Version 0.3 implements:
 - independent traffic keys, IVs, and Record sequence spaces per Carrier;
 - Carrier ID / Generation validation;
 - one deterministic cross-Carrier reinjection path;
+- unexpected Carrier-loss detection;
+- same-ID higher-Generation Carrier replacement;
+- outstanding Transmission retention across transport loss;
+- automatic reinjection of a stored wire Frame onto the replacement Carrier;
 - duplicate application-delivery suppression;
 - Session-credit accounting that counts reinjection only once;
 - direct verification against the specification repository test vectors.
 
 Not yet implemented:
 
-- automatic retransmission timers and scheduler-driven reinjection;
-- full TCP Carrier replacement after transport loss;
+- timer-driven retransmission and adaptive scheduler-driven reinjection;
 - multiple simultaneous Streams;
 - RESET / STOP_SENDING terminal state engine;
 - tombstone / retired-identity engine;
@@ -58,7 +61,9 @@ src/mpx4/
 ├── stream.py             Reassembly, credit, final-size and Tx state
 ├── stream_endpoint.py    Single-Carrier Stream exchange
 ├── carrier.py            CREATE/JOIN Carrier lifecycle and Session state
+├── reliability.py        Pending Transmission / Attempt reinjection helpers
 ├── multipath_endpoint.py Two-Carrier reinjection reference exchange
+├── replacement_endpoint.py Carrier-loss and Generation replacement exchange
 ├── vectorcheck.py        Specification-vector verifier
 └── __main__.py           Command-line interface
 
@@ -67,6 +72,7 @@ tests/
 ├── test_endpoint.py
 ├── test_stream.py
 ├── test_multipath.py
+├── test_replacement.py
 └── test_vectors.py
 ```
 
@@ -106,7 +112,7 @@ Expected result:
 MPX4_SPEC_DIR=../MPX-4 python -m unittest discover -s tests -v
 ```
 
-The suite includes real localhost TCP tests for CREATE, a complete single-Carrier Stream, JOIN, and two-Carrier reinjection.
+The suite includes real localhost TCP tests for CREATE, a complete single-Carrier Stream, JOIN, two-Carrier reinjection, and Generation-based Carrier replacement after transport loss.
 
 ## Minimal PING/PONG endpoint
 
@@ -211,6 +217,50 @@ The Server deliberately reads Carrier 2 first. Both Attempts use the same Transm
 
 This is a deterministic reinjection conformance exercise, not yet an adaptive scheduler.
 
+## Carrier loss and Generation replacement
+
+Version 0.4 exercises the TCP-binding replacement rules with three TCP connections over the life of one logical Session:
+
+```text
+Carrier 1 / Gen 0   stays active
+Carrier 2 / Gen 0   DATA Attempt sent, no MPX ACK
+        |
+        X  unexpected TCP loss
+        |
+Transmission remains outstanding in Session ledger
+        |
+new TCP connection
+        |
+Carrier 2 / Gen 1   JOIN with fresh nonces
+        |
+        +-- fresh traffic keys / IVs
+        +-- Record sequence starts at 0
+        |
+original stored STREAM_DATA Frame reinjected
+        |
+TRANSMISSION_ACK
+```
+
+Start the server:
+
+```bash
+python -m mpx4 replacement-server \
+  --listen 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --expect "survive carrier loss"
+```
+
+Then run the client:
+
+```bash
+python -m mpx4 replacement-client \
+  --connect 127.0.0.1:24004 \
+  --key a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf \
+  --send "survive carrier loss"
+```
+
+The old Carrier becomes inactive, the surviving Carrier remains active, Session and Stream state are preserved, Carrier 2 advances from Generation 0 to Generation 1, and the outstanding DATA Transmission is reinjected without changing its Transmission ID or consuming logical credit a second time.
+
 ## JOIN rejection behavior
 
 Draft 03 defines JOIN validation failures such as `SESSION_CONFLICT`, `SCHEDULER_MISMATCH`, and `CARRIER_CONFLICT`, but it does not define a dedicated pre-authentication handshake-error response message.
@@ -223,7 +273,7 @@ GitHub Actions checks out the current `Dsd1001/MPX-4` specification and runs:
 
 1. unit tests;
 2. localhost TCP endpoint tests;
-3. CREATE/JOIN and reinjection tests;
+3. CREATE/JOIN, reinjection, and Carrier replacement tests;
 4. all implemented specification vectors.
 
 A scheduled run also checks whether newer specification changes have broken the reference implementation.

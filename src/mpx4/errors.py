@@ -40,3 +40,7 @@ class CarrierConflictError(MPXError):
 
 class SchedulerMismatchError(MPXError):
     """JOIN does not repeat the Session Scheduler."""
+
+
+class CarrierLostError(MPXError):
+    """The underlying transport for an authenticated Carrier was lost."""
