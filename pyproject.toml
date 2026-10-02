@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpx4-reference"
+version = "0.1.0"
+description = "Reference implementation and interoperability harness for MPX/4"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "BSD-3-Clause"}
+authors = [
+  {name = "MPX/4 Contributors"}
+]
+dependencies = [
+  "cryptography>=42"
+]
+
+[project.scripts]
+mpx4-ref = "mpx4.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["mpx4"]

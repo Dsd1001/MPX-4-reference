@@ -1,0 +1,38 @@
+name: reference-conformance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reference implementation
+        uses: actions/checkout@v4
+
+      - name: Checkout current MPX/4 specification
+        uses: actions/checkout@v4
+        with:
+          repository: Dsd1001/MPX-4
+          path: spec
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install reference implementation
+        run: python -m pip install .
+
+      - name: Run unit and localhost TCP tests
+        env:
+          MPX4_SPEC_DIR: ${{ github.workspace }}/spec
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify specification vectors
+        run: python -m mpx4 vectors --spec spec
